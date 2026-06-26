@@ -1,0 +1,35 @@
+- id: ECS-STRUCT-001
+  title: "遍历 DynamicBuffer 时不能做结构性变更"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [DynamicBuffer, ECB, 遍历, CreateEntity, ObjectDisposedException, version, 结构性变更]
+  category: ecs_perf
+  bad_pattern: "托管OnUpdate边遍历buffer边CreateEntity→全局version bump失效handle抛ObjectDisposedException"
+  recommended_pattern: "先快照到NativeList再改"
+  source: "MEMORY.md#reference_buffer_iteration_structural_change"
+
+- id: ECS-STRUCT-002
+  title: "EntityQuery 懒加载不能用 == null"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [EntityQuery, "null", 懒加载, NRE, ToEntityArray, GetEntityQuery]
+  category: ecs_perf
+  bad_pattern: "if(q==null)恒false(EntityQuery是struct)不触发初始化,ToEntityArray抛NRE"
+  recommended_pattern: "用显式bool标志触发一次性GetEntityQuery"
+  source: "MEMORY.md#reference_entity_query_struct_lazy_init"
+
+- id: ECS-STRUCT-003
+  title: "SystemAPI 不能在静态 helper 里调用（EA0004）"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [SystemAPI, EA0004, 静态, helper, ISystem]
+  category: ecs_perf
+  bad_pattern: "SystemAPI.*在静态helper调用报EA0004"
+  recommended_pattern: "需要SystemAPI的逻辑内联进OnUpdate；ECB操作可放helper"
+  source: "MEMORY.md#reference_systemapi_system_context"
+
+- id: ECS-STRUCT-004
+  title: "ISystem GetSingleton 必须配 OnCreate RequireForUpdate"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [GetSingleton, GetSingletonBuffer, RequireForUpdate, OnCreate, InvalidOperationException, TryGetSingleton]
+  category: ecs_perf
+  bad_pattern: "OnUpdate里GetSingleton<T>/GetSingletonBuffer<T>漏RequireForUpdate<T>,启动早期抛InvalidOperationException"
+  recommended_pattern: "OnCreate配RequireForUpdate<T>；TryGetSingleton/阶段分支内调用例外"
+  source: "MEMORY.md#reference_isystem_getsingleton_require_for_update"

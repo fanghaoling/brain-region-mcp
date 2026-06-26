@@ -1,0 +1,86 @@
+"""LiteLLMBackend：默认且 v1 唯一内置的 ModelBackend。
+
+litellm 1.89.x 内置 tenacity 重试（429/5xx/网络异常 + 尊重 Retry-After），所以**省掉
+asset-generator-mcp 的 _http.py**。httpx 直连，不需单独装 openai/anthropic/google-genai SDK。
+
+⚠️ 供应链安全：pyproject 已 pin `litellm>=1.83.0,<2.0`（1.82.7/1.82.8 被投毒）。
+
+强制 JSON：统一 `response_format={"type":"json_object"}`（国产严格 json_schema 不可靠，
+json_object + prompt 贴 schema 范例 + parsing 防御解析）。调用方可通过构造参数覆盖。
+"""
+from __future__ import annotations
+
+import logging
+
+from .base import ModelResponse
+
+logger = logging.getLogger("design_review.provider.litellm")
+
+
+class LiteLLMBackend:
+    """基于 litellm 的 ModelBackend 实现。
+
+    litellm 延迟 import（在 complete 内），避免 server 启动时加载重依赖、且让"不用 litellm
+    的自定义 backend"场景不必装 litellm。
+    """
+
+    def __init__(
+        self,
+        *,
+        num_retries: int = 2,
+        timeout: float = 60.0,
+        response_format: dict | None = None,
+    ) -> None:
+        self.num_retries = num_retries
+        self.timeout = timeout
+        # 默认强制 JSON 输出（国产严格 schema 不可靠，用 json_object + 防御解析）
+        self.response_format = (
+            response_format if response_format is not None else {"type": "json_object"}
+        )
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.3,
+        top_p: float = 0.95,
+        max_tokens: int = 4096,
+    ) -> ModelResponse:
+        import litellm  # 延迟 import
+
+        # 自动丢弃 provider 不支持的参数（zai/volcengine 不支持 response_format）。
+        # 国产模型靠 prompt 强制 JSON + ParseStage 防御解析兜底。
+        litellm.drop_params = True
+
+        try:
+            resp = await litellm.acompletion(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                num_retries=self.num_retries,
+                timeout=self.timeout,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                response_format=self.response_format,
+            )
+            usage = resp.usage.model_dump() if getattr(resp, "usage", None) else {}
+            hp = getattr(resp, "_hidden_params", None) or {}
+            content = resp.choices[0].message.content or ""
+            return ModelResponse(
+                model=model,
+                content=content,
+                usage=usage,
+                cost_usd=hp.get("response_cost"),
+            )
+        except Exception as e:  # noqa: BLE001 — 失败隔离，不向上抛
+            logger.warning("LiteLLMBackend 调用失败 model=%s: %s: %s", model, type(e).__name__, e)
+            return ModelResponse(
+                model=model,
+                content="",
+                error=f"{type(e).__name__}: {e}",
+            )

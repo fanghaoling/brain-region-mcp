@@ -1,0 +1,17 @@
+- id: FF-001
+  title: "FlowField cost field 数据源缺口（collider 不进 buffer）"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [FlowField, cost field, collider, GreedyRect, 墙, 卡死, MergedColliderInfo, LevelEntity]
+  category: ecs_perf
+  bad_pattern: "GreedyRectBlockBuffer只含渲染方块;没材质映射的墙不进buffer但物理collider照建→cost field漏→敌人撞墙卡死(server vel≠0但物理MotionVel=0)"
+  recommended_pattern: "从物理LevelEntity collider补标255(Y判定挡身体高度)；Layer0 Tags=32是可站地板不是墙别盲目标"
+  source: "MEMORY.md#project_flowfield_cost_field_collider_gap"
+
+- id: FF-002
+  title: "FlowField escapeV 孤岛 bug"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [FlowField, escapeV, 孤岛, BFS, cell255, 卡, integ, MaxRadiusCells]
+  category: ecs_perf
+  bad_pattern: "敌人cell=255(膨胀区)时escapeV选integ最低可走格,但BFS截断让r=1出口integ=MaxValue被跳过→追r=2..4被墙隔开的孤岛→撞中间墙卡凹陷"
+  recommended_pattern: "优先r最小圈出口(几何最近)；确诊:cell255+周围integ全MaxValue+ffVal指向全墙"
+  source: "MEMORY.md#project_flowfield_escapev_island_bug"

@@ -1,0 +1,35 @@
+- id: ECS-BURST-001
+  title: "Burst BC1064：managed struct 按值传"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [Burst, BC1064, ISystem, OnUpdate, struct, 按值传, AOT, entry point]
+  category: ecs_perf
+  bad_pattern: "managed(无方法级[BurstCompile]的ISystem.OnUpdate)调[BurstCompile]static按值传/返回struct→entry point报BC1064"
+  recommended_pattern: "struct参数用in返回用out；OnUpdate加方法级[BurstCompile]；ISystem类型级[BurstCompile]不自动让OnUpdate Burst；编辑器过≠打包过"
+  source: "MEMORY.md#reference_burst_bc1064_managed_struct_param"
+
+- id: ECS-BURST-002
+  title: "Burst BC1040：读可变 static 字段"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [Burst, BC1040, static, 门控, 开关, readonly]
+  category: ecs_perf
+  bad_pattern: "[BurstCompile]方法读非readonly static(可变运行时开关)打包报BC1040,Editor宽容不报"
+  recommended_pattern: "去门控总执行/改readonly常量/unsafe指针存unmanaged"
+  source: "MEMORY.md#reference_burst_bc1040_non_readonly_static"
+
+- id: ECS-BURST-003
+  title: "Burst Stopwatch 在 Android AOT null fp 崩"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [Burst, Stopwatch, AOT, Android, 崩, pc=0, SIGSEGV, GetTimestamp]
+  category: ecs_perf
+  bad_pattern: "Stopwatch.GetTimestamp/Frequency在[BurstCompile]里编译过不报BC,AOT静态FP槽null→blr0→SIGSEGV(Editor/JIT正常易漏)"
+  recommended_pattern: "用ProfilerUnsafeUtility.Timestamp；托管代码用Stopwatch仍安全"
+  source: "MEMORY.md#reference_burst_stopwatch_null_fp_android_aot"
+
+- id: ECS-BURST-004
+  title: "Burst AOT 吐旧 .so：删 Library/Bee 强制重编译"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [Burst, AOT, Bee, stale, BuildId, 增量缓存, 重编译]
+  category: ecs_perf
+  bad_pattern: "改了Burst代码重打包但崩溃栈/BuildId不变=Burst增量缓存没重编"
+  recommended_pattern: "删Library/Bee(不只BurstCache)+新文件夹构建；三连取证(BuildId必变/metadata grep/反汇编)"
+  source: "MEMORY.md#reference_burst_aot_stale_lib_bee_force_recompile"

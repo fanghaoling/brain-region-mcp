@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://design-review-mcp/review-report.schema.json",
+  "title": "ReviewReport",
+  "description": "审查报告标准契约。所有 ReportRenderer（Markdown/JSON/SARIF）的统一输入。",
+  "type": "object",
+  "required": ["document_type", "adapter", "panel", "consensus", "majority", "individual"],
+  "properties": {
+    "document_type": { "type": "string" },
+    "adapter": { "type": "string" },
+    "project_version": { "type": "object", "additionalProperties": { "type": "string" } },
+    "panel": { "type": "array", "items": { "type": "string" } },
+    "failed_models": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "失败模型 [{model, error}]。"
+    },
+    "retrieved_cases": { "type": "array", "items": { "type": "string" } },
+    "consensus": { "type": "array", "items": { "$ref": "#/$defs/canonicalFinding" } },
+    "majority": { "type": "array", "items": { "$ref": "#/$defs/canonicalFinding" } },
+    "individual": {
+      "type": "object",
+      "description": "单模型发现 {model: [finding]}。",
+      "additionalProperties": { "type": "array" }
+    },
+    "knowledge_hit": { "type": "array", "items": { "type": "string" } },
+    "usage": { "type": "object" },
+    "summary": { "type": "string" },
+    "risk": { "type": "object" }
+  },
+  "$defs": {
+    "canonicalFinding": {
+      "type": "object",
+      "required": ["canonical_title", "dimension", "severity", "evidence_quote", "location", "suggestion", "flagged_by", "calibrated_confidence"],
+      "properties": {
+        "canonical_title": { "type": "string" },
+        "dimension": { "type": "string" },
+        "severity": { "enum": ["high", "medium", "low"] },
+        "evidence_quote": { "type": "string" },
+        "location": { "type": "string" },
+        "suggestion": { "type": "string" },
+        "case_ref": { "type": ["string", "null"] },
+        "flagged_by": { "type": "array", "items": { "type": "string" } },
+        "calibrated_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "bucket": { "type": "string" }
+      }
+    }
+  }
+}

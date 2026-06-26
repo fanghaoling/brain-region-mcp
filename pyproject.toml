@@ -1,0 +1,40 @@
+[project]
+name = "design-review-mcp"
+version = "0.1.0"
+description = "AI Design Review Framework：多模型对抗设计审查 MCP，项目知识库 RAG + canonical 归一 + 校准共识。Unity ECS 为首个参考 adapter。"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "mcp>=1.2.0",
+    "litellm>=1.83.0,<2.0",
+    "pyyaml>=6.0",
+    "jsonschema>=4.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+design-review-mcp = "design_review.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["design_review"]
+
+# yaml/json schema 随包发布进 wheel（开发时 uv run 用源码路径读取，force-include 仅 pip 发布生效）。
+# generic adapter 无自己的 reviewers（回退 core 通用），故不含 generic/reviewers。
+[tool.hatch.build.targets.wheel.force-include]
+"design_review/core/reviewers" = "design_review/core/reviewers"
+"design_review/core/schema" = "design_review/core/schema"
+"design_review/adapters/unity/reviewers" = "design_review/adapters/unity/reviewers"
+"design_review/adapters/unity/knowledge" = "design_review/adapters/unity/knowledge"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"

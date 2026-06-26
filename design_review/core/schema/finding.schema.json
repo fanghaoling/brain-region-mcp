@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://design-review-mcp/finding.schema.json",
+  "title": "ReviewerFinding",
+  "description": "单个 reviewer 模型对一份文档的发现。evidence_quote 强制非空（parsing 层丢弃空引用）。",
+  "type": "object",
+  "required": ["dimension", "severity", "title", "evidence_quote", "location", "suggestion", "confidence"],
+  "properties": {
+    "dimension": {
+      "type": "string",
+      "description": "审查维度，如 ecs_perf / netcode / safety / planner / performance / architecture。"
+    },
+    "severity": { "enum": ["high", "medium", "low"] },
+    "title": { "type": "string", "description": "一句话问题标题（模型原始措辞，归一前）。" },
+    "evidence_quote": {
+      "type": "string",
+      "minLength": 1,
+      "description": "引用方案/代码原文片段，证明问题真实存在。无引用不要提。"
+    },
+    "location": { "type": "string", "description": "file:line 或方案段落引用。" },
+    "suggestion": { "type": "string", "description": "如何修复。" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "模型自报置信度 0~1。" },
+    "case_ref": {
+      "type": ["string", "null"],
+      "description": "命中项目知识库的案例 id（如 ECS-BURST-001），无则 null。"
+    }
+  },
+  "additionalProperties": false
+}

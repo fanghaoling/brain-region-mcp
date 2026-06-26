@@ -1,0 +1,44 @@
+- id: NET-001
+  title: "IInputComponentData prediction tick 读回放值"
+  version: {netcode: ">=1.10,<2.0"}
+  triggers: [NetCode, prediction, IInputComponentData, tick, command stream, ***REMOVED***, 残留, GhostInput]
+  category: netcode
+  bad_pattern: "IInputComponentData在prediction job读的是command stream按tick回放的历史值(非组件当前值)"
+  recommended_pattern: "client消费当前输入在GhostInputSystemGroup(render frame)读组件；LateSimulation reset不进command stream"
+  source: "MEMORY.md#reference_netcode_iinputcomponentdata_prediction_tick"
+
+- id: NET-002
+  title: "***REMOVED***(***REMOVED***)不同步、***REMOVED***"
+  version: {netcode: ">=1.10,<2.0"}
+  triggers: [NetCode, ***REMOVED***, Projectile, 同步, 预测, Velocity, Lifetime, HasHit, GhostField]
+  category: netcode
+  bad_pattern: "***REMOVED***,曾是***REMOVED***,***REMOVED***"
+  recommended_pattern: "静态墙反弹两端确定性一致；动态墙/跨平台才发散；别轻易重新同步***REMOVED***状态"
+  source: "MEMORY.md#reference_projectile_not_synced"
+
+- id: NET-003
+  title: "伤害判定走 ***REMOVED*** buffer"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: [***REMOVED***, ApplyDamage, Health, 可破坏, buffer, 墙]
+  category: netcode
+  bad_pattern: "***REMOVED***；***REMOVED***有buffer无Health组件"
+  recommended_pattern: "用TryGetBuffer<***REMOVED***>判可伤；无该buffer=墙；HasBuffer是结构性存在检查随archetype同步"
+  source: "MEMORY.md#reference_damage_healthchanged_buffer"
+
+- id: NET-004
+  title: "***REMOVED*** 两条路径"
+  version: {netcode: ">=1.10,<2.0"}
+  triggers: [NetCode, ***REMOVED***, spawn, ***REMOVED***, Server, client, SimulationJob, ***REMOVED***, 分裂]
+  category: netcode
+  bad_pattern: "***REMOVED***(以Server为准)；***REMOVED***"
+  recommended_pattern: "Server权威***REMOVED***在*SimulationJob的IsServer分支(WeaponSystems.cs)，client视觉在***REMOVED***；两边都挂；分裂系统UpdateAfter(启用Despawn的系统)+UpdateBefore(DespawnSystem)"
+  source: "MEMORY.md#reference_projectile_spawn_dual_path_server_client"
+
+- id: NET-005
+  title: "[GhostEnabledBit] 组件 EntityQuery 匹配 0"
+  version: {netcode: ">=1.10,<2.0"}
+  triggers: [GhostEnabledBit, EntityQuery, SystemAPI.Query, 匹配0, ***REMOVED***, IsComponentEnabled]
+  category: netcode
+  bad_pattern: "***REMOVED***等[GhostEnabledBit]组件放进SystemAPI.Query类型参数让整个Query匹配0(HasComponent正常)"
+  recommended_pattern: "改用ComponentLookup.HasComponent+IsComponentEnabled在遍历内查"
+  source: "MEMORY.md#reference_ghost_enabled_bit_query_quirk"
