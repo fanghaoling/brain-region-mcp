@@ -165,6 +165,19 @@ jobs:
 - **兼容网关 endpoint**（`provider: openai|anthropic`）：自定义 `base_url` 的 OpenAI/Anthropic 协议兼容端点（中转站）。用 `endpoints` + panel dict 引用，litellm 按 provider 拼 `openai/` 或 `anthropic/` 前缀 + per-call `api_base`/`api_key`。
 - **litellm 原生 provider**（`zai/`、`deepseek/`、`gemini/`、`bedrock/`、`vertex_ai/`...）：直接写 model 字符串走环境变量（如 `ZAI_API_KEY`），**不走 endpoint 机制**。
 
+**v2.3 短引用 / 全展开**（一家中转站多模型时少打字）：`endpoints.<id>` 声明 `models` 列表后，panel 支持：
+- **短引用** `"zhipu/glm-5.2"`（endpoint_id/model）→ 等价 `{"endpoint":"zhipu","model":"glm-5.2"}`，label=`zhipu/glm-5.2`
+- **全展开** `"zhipu"`（== endpoint_id）→ 一行引该 endpoint 声明的所有 models
+
+```jsonc
+"endpoints": {
+  "zhipu": {"provider":"anthropic","base_url":"...","api_key_env":"ANTHROPIC_AUTH_TOKEN",
+            "models": ["glm-5.2", "glm-4.7"]}      // 声明该中转站可用模型
+},
+"panel": ["gpt-4o", "zhipu/glm-5.2", "zhipu/glm-4.7"]   // 或 "zhipu" 一行全展开
+```
+panel str 解析三态：`==endpoint_id`→全展开 / `endpoint_id/model`→短引用 / 否则→litellm 原生官方。`zai/glm-5.2` 这类前缀非 endpoint_id 的仍走 litellm 原生（不会误判短引用）。dict 自定义 label 仍支持（向后兼容）。
+
 **安全**：`api_key` 只在 server 解析后交给 backend 持有，不进审查 pipeline、不进缓存库（`PanelEntry` 只含 `{label, model, endpoint_id}`）。优先用 `api_key_env`，明文 `api_key` 仅作 fallback 且**别让 config.json 进 git**。
 
 **label 是模型身份标识**：报告里 `flagged_by`/`panel`/`failed_models` 用 label 显示。panel 内 label 必须唯一（撞名报错——否则 consensus 会把同名模型错误合并）。官方 str 项的 label = model 字符串本身。

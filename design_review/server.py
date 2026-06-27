@@ -112,10 +112,16 @@ def _resolve_endpoints(cfg: dict) -> dict:
     return registry
 
 
-def _normalize_panel(panel: list, endpoint_ids: set) -> list[dict]:
+def _normalize_panel(
+    panel: list, endpoint_ids: set, endpoints_cfg: dict | None = None
+) -> list[dict]:
     """panel（list[str|dict]）-> list[PanelEntry{label, model, endpoint_id}]。
 
-    str=官方（endpoint_id=None，走 litellm env）；dict={endpoint, model, label} 引用中转站。
+    str 三态（v2.3 加短引用/全展开，向后兼容 litellm 原生）：
+    - == endpoint_id → 全展开 endpoints.<id>.models（声明的模型列表，一行引一家中转站全部模型）
+    - endpoint_id/model → 短引用（label=id/model，省去 dict 一长串）
+    - 否则 → litellm 原生官方（endpoint_id=None，走 env）
+    dict={endpoint, model, label} 引用中转站（v1.6，自定义 label）。
     校验 label 全局唯一（撞名报错——label 是身份标识，撞名会让 consensus 错误合并）。
     PanelEntry **不含 credential**（key 只在 endpoint_registry，backend 边缘解析）。
     """
@@ -123,27 +129,60 @@ def _normalize_panel(panel: list, endpoint_ids: set) -> list[dict]:
     labels: set[str] = set()
     for item in panel or []:
         if isinstance(item, dict):
-            eid = item.get("endpoint")
-            if eid not in endpoint_ids:
-                raise ValueError(f"panel 项引用了未定义的 endpoint {eid!r}（config endpoints 里没声明）")
-            model = item.get("model")
-            if not model:
-                raise ValueError(f"panel 项（endpoint={eid}）缺 model")
-            label = item.get("label") or f"{eid}/{model}"
+            specs = [_dict_spec(item, endpoint_ids)]
         elif isinstance(item, str):
-            eid, model, label = None, item, item
+            specs = _str_specs(item, endpoint_ids, endpoints_cfg)
         else:
-            raise ValueError(f"panel 项必须是 str（官方模型）或 dict（中转引用），得到 {type(item).__name__}")
-        if label in labels:
-            raise ValueError(f"panel label 撞名：{label!r}（label 是模型身份标识，撞名会让 consensus 错误合并）")
-        labels.add(label)
-        entries.append({"label": label, "model": model, "endpoint_id": eid})
+            raise ValueError(
+                f"panel 项必须是 str（官方模型/短引用/全展开）或 dict（中转引用），得到 {type(item).__name__}"
+            )
+        for eid, model, label in specs:
+            if label in labels:
+                raise ValueError(f"panel label 撞名：{label!r}（label 是模型身份标识，撞名会让 consensus 错误合并）")
+            labels.add(label)
+            entries.append({"label": label, "model": model, "endpoint_id": eid})
     return entries
 
 
-def _normalize_one(spec, endpoint_ids: set) -> dict:
+def _str_specs(item: str, endpoint_ids: set, endpoints_cfg: dict | None) -> list[tuple]:
+    """str panel 项 → [(endpoint_id, model, label)]（全展开返回多个）。
+
+    - item == endpoint_id → 全展开 endpoints.<id>.models
+    - item = endpoint_id/model → 短引用（label=item）
+    - 否则 → litellm 原生官方（endpoint_id=None）
+    """
+    # 全展开：str 本身是 endpoint_id
+    if item in endpoint_ids:
+        models = ((endpoints_cfg or {}).get(item) or {}).get("models") or []
+        if not models:
+            raise ValueError(
+                f"panel {item!r} 是 endpoint_id 但 endpoints.{item}.models 未声明（全展开需 models 列表）"
+            )
+        return [(item, m, f"{item}/{m}") for m in models]
+    # 短引用：endpoint_id/model
+    if "/" in item:
+        prefix, _, model = item.partition("/")
+        if prefix in endpoint_ids:
+            return [(prefix, model, item)]  # label = id/model
+    # litellm 原生官方
+    return [(None, item, item)]
+
+
+def _dict_spec(item: dict, endpoint_ids: set) -> tuple:
+    """dict panel 项 → (endpoint_id, model, label)。引用中转站（v1.6，自定义 label）。"""
+    eid = item.get("endpoint")
+    if eid not in endpoint_ids:
+        raise ValueError(f"panel 项引用了未定义的 endpoint {eid!r}（config endpoints 里没声明）")
+    model = item.get("model")
+    if not model:
+        raise ValueError(f"panel 项（endpoint={eid}）缺 model")
+    label = item.get("label") or f"{eid}/{model}"
+    return (eid, model, label)
+
+
+def _normalize_one(spec, endpoint_ids: set, endpoints_cfg: dict | None = None) -> dict:
     """单个 model 规格（str|dict）-> PanelEntry。供 normalizer 复用（schema 与 panel 统一）。"""
-    return _normalize_panel([spec], endpoint_ids)[0]
+    return _normalize_panel([spec], endpoint_ids, endpoints_cfg)[0]
 
 
 def _build_engine(adapter, dd: dict) -> ReviewEngine:
@@ -154,13 +193,13 @@ def _build_engine(adapter, dd: dict) -> ReviewEngine:
     # v1.7 隐私策略：解析 trusted（复用 endpoint）+ build_policy（off→None / strict→StrictPolicy）
     privacy_cfg = dd.get("privacy_policy")
     trusted_entry = (
-        _normalize_one(privacy_cfg["trusted"], endpoint_ids)
+        _normalize_one(privacy_cfg["trusted"], endpoint_ids, dd.get("endpoints"))
         if (isinstance(privacy_cfg, dict) and privacy_cfg.get("trusted"))
         else None
     )
     policy = build_policy(privacy_cfg, trusted_entry)
     pipeline = build_default_pipeline(
-        normalizer=_normalize_one(dd.get("normalizer_model", "claude-opus-4-8"), endpoint_ids),
+        normalizer=_normalize_one(dd.get("normalizer_model", "claude-opus-4-8"), endpoint_ids, dd.get("endpoints")),
         threshold=int(dd.get("consensus_threshold", 2)),
         policy=policy,
     )
@@ -329,7 +368,9 @@ async def review_document(
         panel=panel, dimensions=dimensions, retrieve_top_k=retrieve_top_k,
         output_format=output_format, timeout=timeout, effort=effort, max_cost_usd=max_cost_usd,
     )
-    panel_used = _normalize_panel(dd["panel"], set((dd.get("endpoints") or {}).keys()))
+    panel_used = _normalize_panel(
+        dd["panel"], set((dd.get("endpoints") or {}).keys()), dd.get("endpoints")
+    )
     dims_used = dd["dimensions"]
     root = os.environ.get("UNITY_PROJECT_ROOT", ".")
     ad = _resolve_adapter(adapter, root)

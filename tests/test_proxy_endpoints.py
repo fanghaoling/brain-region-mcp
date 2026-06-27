@@ -110,6 +110,43 @@ def test_normalize_one_str_and_dict():
     }
 
 
+# ===== v2.3 短引用 endpoint_id/model + 全展开 endpoint_id =====
+
+def test_normalize_panel_short_ref():
+    """endpoint_id/model 短引用 → endpoint + model，label=id/model（省去 dict 一长串）。"""
+    entries = _normalize_panel(["zhipu/glm-5.2"], {"zhipu"})
+    assert entries == [{"label": "zhipu/glm-5.2", "model": "glm-5.2", "endpoint_id": "zhipu"}]
+
+
+def test_normalize_panel_expand_all_models():
+    """str == endpoint_id → 全展开 endpoints.<id>.models（一行引一家中转站全部模型）。"""
+    cfg = {"zhipu": {"models": ["glm-5.2", "glm-4.7"]}}
+    entries = _normalize_panel(["zhipu"], {"zhipu"}, cfg)
+    assert entries == [
+        {"label": "zhipu/glm-5.2", "model": "glm-5.2", "endpoint_id": "zhipu"},
+        {"label": "zhipu/glm-4.7", "model": "glm-4.7", "endpoint_id": "zhipu"},
+    ]
+
+
+def test_normalize_panel_expand_requires_models_declared():
+    """全展开但 endpoints.<id>.models 未声明 → 清晰报错。"""
+    with pytest.raises(ValueError, match="models 未声明"):
+        _normalize_panel(["zhipu"], {"zhipu"}, {})
+
+
+def test_normalize_panel_short_ref_not_endpoint_falls_through():
+    """str 含 / 但前缀非 endpoint_id → litellm 原生（zai/glm-5.2 仍走官方 env，不误判短引用）。"""
+    entries = _normalize_panel(["zai/glm-5.2"], {"zhipu"})
+    assert entries == [{"label": "zai/glm-5.2", "model": "zai/glm-5.2", "endpoint_id": None}]
+
+
+def test_normalize_panel_short_ref_and_expand_no_label_collision():
+    """短引用 + 全展开同 endpoint 不同 model → label 不撞（id/model 唯一）。"""
+    cfg = {"zhipu": {"models": ["glm-4.7"]}}
+    entries = _normalize_panel(["zhipu/glm-5.2", "zhipu"], {"zhipu"}, cfg)
+    assert [e["label"] for e in entries] == ["zhipu/glm-5.2", "zhipu/glm-4.7"]
+
+
 # ===== LiteLLMBackend：endpoint_id → litellm.acompletion 参数 =====
 
 class _Capture:
