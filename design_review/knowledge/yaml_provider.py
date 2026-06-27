@@ -42,29 +42,43 @@ def render_for_prompt(cases: list[Case]) -> str:
 
 
 class YamlKnowledgeProvider:
-    """从目录下所有 *.yaml 加载案例（每文件一个 list）。"""
+    """从一个或多个目录加载 *.yaml 案例（每文件一个 list）。
 
-    def __init__(self, knowledge_dir: str | Path):
-        self.dir = Path(knowledge_dir)
+    支持叠加（overlay）：传多个目录时，后出现的覆盖先出现的（同 id 取后者）。典型用法：
+    framework 通用知识库目录 + 项目本地 `.design-review/knowledge/` 目录。项目本地放
+    敏感/项目特定案例（如自家网络同步设计），不随开源 framework 上传。
+    """
+
+    def __init__(self, knowledge_dir: "str | Path | list[str | Path]"):
+        if isinstance(knowledge_dir, (str, Path)):
+            self.dirs = [Path(knowledge_dir)]
+        else:
+            self.dirs = [Path(d) for d in knowledge_dir]
         self._cases: list[Case] = self._load()
 
+    @property
+    def dir(self) -> Path:
+        """首个目录（向后兼容：老代码读 provider.dir）。"""
+        return self.dirs[0] if self.dirs else Path()
+
     def _load(self) -> list[Case]:
-        if not self.dir.exists():
-            logger.warning("knowledge 目录不存在: %s", self.dir)
-            return []
-        cases: list[Case] = []
-        for p in sorted(self.dir.glob("*.yaml")):
-            try:
-                data = yaml.safe_load(p.read_text(encoding="utf-8")) or []
-            except Exception as e:  # noqa: BLE001
-                logger.warning("knowledge 文件解析失败 %s: %s", p, e)
+        by_id: dict[str, Case] = {}
+        order: list[str] = []
+        for d in self.dirs:
+            if not d.exists():
                 continue
-            if not isinstance(data, list):
-                logger.warning("knowledge 文件非 list %s，跳过", p)
-                continue
-            for item in data:
-                cases.append(
-                    Case(
+            n_before = len(by_id)
+            for p in sorted(d.glob("*.yaml")):
+                try:
+                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or []
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("knowledge 文件解析失败 %s: %s", p, e)
+                    continue
+                if not isinstance(data, list):
+                    logger.warning("knowledge 文件非 list %s，跳过", p)
+                    continue
+                for item in data:
+                    c = Case(
                         id=item.get("id", ""),
                         title=item.get("title", ""),
                         triggers=[t for t in (item.get("triggers") or []) if isinstance(t, str)],
@@ -74,8 +88,14 @@ class YamlKnowledgeProvider:
                         version=dict(item.get("version") or {}),
                         source=item.get("source", ""),
                     )
-                )
-        logger.info("knowledge 加载 %d 条案例 from %s", len(cases), self.dir)
+                    if c.id and c.id not in by_id:
+                        order.append(c.id)
+                    if c.id:
+                        by_id[c.id] = c  # 后者覆盖（overlay 语义）
+            added = len(by_id) - n_before
+            logger.info("knowledge 目录 %s：+新增 %d 条（累计唯一 %d）", d, added, len(by_id))
+        cases = [by_id[i] for i in order if i in by_id]
+        logger.info("knowledge 加载完成：%d 条唯一案例 from %d 目录", len(cases), len(self.dirs))
         return cases
 
     def list_cases(self) -> list[Case]:

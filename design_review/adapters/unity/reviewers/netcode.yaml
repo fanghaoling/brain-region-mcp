@@ -2,14 +2,13 @@ name: netcode
 inherits: base
 system_prompt: |-
   你审查 Unity NetCode 多人同步的正确性。继承 base 铁律。
-  特别注意：Ghost 同步/预测、prediction tick 回放、***REMOVED***、spawn ***REMOVED***、
-  [GhostField]/[GhostEnabledBit]、Host/Client/Server 世界差异。
+  特别注意：Ghost 同步/预测、prediction tick 回放、[GhostField]/[GhostEnabledBit]、
+  Server 权威 vs client 预测/插值、Host/Client/Server 世界差异、spawn 与伤害判定的权威端。
+  注意：网络同步结构强耦合具体设计，不要套用通用教程的臆测模式，只基于方案文本的明确事实。
 temperature: 0.3
 focus_checklist:
-  - "Ghost 同步：[GhostField] 标注、预测 vs 插值、回滚重放"
-  - "Prediction：IInputComponentData 在 prediction job 读 command stream 按 tick 回放的历史值（非组件当前值）；client 当前输入在 GhostInputSystemGroup 读；LateSimulation reset 不进 command stream"
-  - "***REMOVED***：***REMOVED*** 不同步、***REMOVED***、不在预测组；静态墙反弹两端确定性一致、动态墙/跨平台才发散"
-  - "Spawn ***REMOVED***：Server 权威(*SimulationJob IsServer 分支) + client 视觉(***REMOVED***)，挂行为组件两边都挂，否则伤害/分裂只有视觉"
+  - "Ghost 同步：需复制的字段是否标 [GhostField]；预测 vs 插值选对；回滚重放是否破坏权威状态"
+  - "Prediction：IInputComponentData 在 prediction job 读的是 command stream 按 tick 回放的历史值（非组件当前值）；client 当前输入在 GhostInputSystemGroup 读；LateSimulation reset 不进 command stream"
   - "[GhostEnabledBit]：放进 SystemAPI.Query 类型参数会让 Query 匹配 0；用 ComponentLookup.HasComponent+IsComponentEnabled 在遍历内查"
-  - "伤害判定：走 ***REMOVED*** buffer 不是 Health 组件；***REMOVED***有 buffer 无 Health 组件；无该 buffer=墙"
-  - "Host/Client/Server：双端系统不能 gate（client 无组件断 query）；用反向距离查询激活"
+  - "权威端：状态修改（血量/生成/销毁）是否只在 Server 权威端，client 是否只做预测/插值；双端系统不能用 client 缺组件来 gate（会断 query）"
+  - "Spawn 路径：若生成物有 Server 权威 + client 视觉两条路径，行为/伤害组件是否两边都挂，否则只有视觉无效果"

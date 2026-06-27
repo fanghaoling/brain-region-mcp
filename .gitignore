@@ -9,3 +9,5 @@ build/
 *.db
 .env
 .env.local
+# 本地一次性验证脚本（常含项目特定方案文本，不上传）
+scripts/verify_*

@@ -63,9 +63,18 @@ def _resolve_adapter(name: str, project_root: str):
     return cls(project_root)
 
 
+def _knowledge_dirs(adapter) -> list:
+    """framework 通用知识库 + 项目本地 overlay（本地存在才加）。"""
+    dirs = [adapter.knowledge_dir()]
+    local = getattr(adapter, "local_knowledge_dir", lambda: None)()
+    if local and Path(str(local)).exists():
+        dirs.append(local)
+    return dirs
+
+
 def _build_engine(adapter, dd: dict) -> ReviewEngine:
     backend = LiteLLMBackend(timeout=float(dd.get("timeout", 90)))
-    knowledge = YamlKnowledgeProvider(adapter.knowledge_dir())
+    knowledge = YamlKnowledgeProvider(_knowledge_dirs(adapter))
     pipeline = build_default_pipeline(
         normalizer_model=dd.get("normalizer_model", "claude-opus-4-8"),
         threshold=int(dd.get("consensus_threshold", 2)),
@@ -162,7 +171,7 @@ async def review_document(
     dims_used = dd["dimensions"]
     root = os.environ.get("UNITY_PROJECT_ROOT", ".")
     ad = _resolve_adapter(adapter, root)
-    knowledge = YamlKnowledgeProvider(ad.knowledge_dir())
+    knowledge = YamlKnowledgeProvider(_knowledge_dirs(ad))
     version = ad.read_version()
     text = content or ""
     if files:
@@ -265,7 +274,7 @@ def list_knowledge(adapter: str = "auto") -> dict:
     """列出知识库案例索引（id/title/category/triggers）。"""
     root = os.environ.get("UNITY_PROJECT_ROOT", ".")
     ad = _resolve_adapter(adapter, root)
-    knowledge = YamlKnowledgeProvider(ad.knowledge_dir())
+    knowledge = YamlKnowledgeProvider(_knowledge_dirs(ad))
     return {
         "adapter": ad.name,
         "cases": [

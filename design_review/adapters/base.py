@@ -34,3 +34,10 @@ class ProjectAdapter(Protocol):
     def knowledge_dir(self) -> Path:
         """该项目知识库（历史踩坑案例 yaml）目录。"""
         ...
+
+    def local_knowledge_dir(self) -> Path:
+        """项目本地知识库目录（项目特定/敏感案例，gitignore），叠加在 knowledge_dir 通用库上。
+
+        用于放不适合随开源 framework 公开的内容（如自家网络同步设计）。可不存在。
+        """
+        ...

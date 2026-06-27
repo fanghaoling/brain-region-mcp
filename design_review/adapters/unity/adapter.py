@@ -55,3 +55,7 @@ class UnityAdapter:
 
     def knowledge_dir(self) -> Path:
         return self._dir / "knowledge"
+
+    def local_knowledge_dir(self) -> Path:
+        """项目本地知识库目录（项目特定/敏感案例，gitignore，叠加在 framework 通用库上）。"""
+        return self.project_root / ".design-review" / "knowledge"

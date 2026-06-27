@@ -36,3 +36,7 @@ class GenericAdapter:
 
     def knowledge_dir(self) -> Path:
         return self._dir / "knowledge"  # 可能不存在 → 空知识库
+
+    def local_knowledge_dir(self) -> Path:
+        """项目本地知识库目录（项目特定案例，gitignore，叠加在 framework 通用库上）。"""
+        return self.project_root / ".design-review" / "knowledge"

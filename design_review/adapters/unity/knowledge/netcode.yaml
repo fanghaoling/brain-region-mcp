@@ -1,44 +1,20 @@
-- id: NET-001
-  title: "IInputComponentData prediction tick 读回放值"
-  version: {netcode: ">=1.10,<2.0"}
-  triggers: [NetCode, prediction, IInputComponentData, tick, command stream, ***REMOVED***, 残留, GhostInput]
+# Unity NetCode 通用经验（开源 framework 随包，不含项目特定同步设计）。
+# 与自家设计强耦合的网络案例放 <项目>/.design-review/knowledge/，走本地 overlay，
+# 不随本仓库公开。这里只列 NetCode 框架级的通用 gotcha，任何 NetCode 项目都可能踩。
+- id: NET-PREDICT-TICK
+  title: "IInputComponentData 在 prediction job 读的是 command stream 回放值，非组件当前值"
+  version: {netcode: ">=1.0,<2.0"}
+  triggers: [NetCode, prediction, IInputComponentData, tick, command stream, 预测, 回放, 输入残留]
   category: netcode
-  bad_pattern: "IInputComponentData在prediction job读的是command stream按tick回放的历史值(非组件当前值)"
-  recommended_pattern: "client消费当前输入在GhostInputSystemGroup(render frame)读组件；LateSimulation reset不进command stream"
-  source: "MEMORY.md#reference_netcode_iinputcomponentdata_prediction_tick"
+  bad_pattern: "在 prediction system/job 里直接读 IInputComponentData 的字段判断当前输入状态——prediction 读的是按 tick 回放的历史值，不是组件当前值，导致状态残留/错帧"
+  recommended_pattern: "client 消费当前输入在 GhostInputSystemGroup（render frame）读组件；LateSimulation 的 reset 不进 command stream；prediction 内只用回放值做预测，不据此设持久状态"
+  source: "Unity NetCode 文档：prediction 与 command stream"
 
-- id: NET-002
-  title: "***REMOVED***(***REMOVED***)不同步、***REMOVED***"
-  version: {netcode: ">=1.10,<2.0"}
-  triggers: [NetCode, ***REMOVED***, Projectile, 同步, 预测, Velocity, Lifetime, HasHit, GhostField]
+- id: NET-GHOSTBIT-QUERY
+  title: "[GhostEnabledBit] 组件放进 SystemAPI.Query 类型参数会让整个 Query 匹配 0"
+  version: {netcode: ">=1.0,<2.0"}
+  triggers: [NetCode, GhostEnabledBit, EntityQuery, SystemAPI.Query, 匹配0, IsComponentEnabled, enabled bit]
   category: netcode
-  bad_pattern: "***REMOVED***,曾是***REMOVED***,***REMOVED***"
-  recommended_pattern: "静态墙反弹两端确定性一致；动态墙/跨平台才发散；别轻易重新同步***REMOVED***状态"
-  source: "MEMORY.md#reference_projectile_not_synced"
-
-- id: NET-003
-  title: "伤害判定走 ***REMOVED*** buffer"
-  version: {entities: ">=1.4,<2.0"}
-  triggers: [***REMOVED***, ApplyDamage, Health, 可破坏, buffer, 墙]
-  category: netcode
-  bad_pattern: "***REMOVED***；***REMOVED***有buffer无Health组件"
-  recommended_pattern: "用TryGetBuffer<***REMOVED***>判可伤；无该buffer=墙；HasBuffer是结构性存在检查随archetype同步"
-  source: "MEMORY.md#reference_damage_healthchanged_buffer"
-
-- id: NET-004
-  title: "***REMOVED*** 两条路径"
-  version: {netcode: ">=1.10,<2.0"}
-  triggers: [NetCode, ***REMOVED***, spawn, ***REMOVED***, Server, client, SimulationJob, ***REMOVED***, 分裂]
-  category: netcode
-  bad_pattern: "***REMOVED***(以Server为准)；***REMOVED***"
-  recommended_pattern: "Server权威***REMOVED***在*SimulationJob的IsServer分支(WeaponSystems.cs)，client视觉在***REMOVED***；两边都挂；分裂系统UpdateAfter(启用Despawn的系统)+UpdateBefore(DespawnSystem)"
-  source: "MEMORY.md#reference_projectile_spawn_dual_path_server_client"
-
-- id: NET-005
-  title: "[GhostEnabledBit] 组件 EntityQuery 匹配 0"
-  version: {netcode: ">=1.10,<2.0"}
-  triggers: [GhostEnabledBit, EntityQuery, SystemAPI.Query, 匹配0, ***REMOVED***, IsComponentEnabled]
-  category: netcode
-  bad_pattern: "***REMOVED***等[GhostEnabledBit]组件放进SystemAPI.Query类型参数让整个Query匹配0(HasComponent正常)"
-  recommended_pattern: "改用ComponentLookup.HasComponent+IsComponentEnabled在遍历内查"
-  source: "MEMORY.md#reference_ghost_enabled_bit_query_quirk"
+  bad_pattern: "把带 [GhostEnabledBit] 的组件作为 SystemAPI.Query<T>() 的类型参数——Query 会匹配 0 个实体（HasComponent 单查正常），系统静默不工作"
+  recommended_pattern: "改用 ComponentLookup.HasComponent + IsComponentEnabled 在遍历内逐实体查 enabled bit，不要把 [GhostEnabledBit] 组件放进 Query 类型参数"
+  source: "Unity NetCode：ghost enabled bit 与 EntityQuery 交互"

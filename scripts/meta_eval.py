@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-UNITY_PROJECT = ROOT.parent  # My project
+UNITY_PROJECT = ROOT.parent.parent  # ROOT=Tools/design-review-mcp → 上两级 = 游戏项目根
 
 from design_review.adapters.unity import UnityAdapter
 from design_review.core import ReviewDocument
@@ -28,24 +28,28 @@ from design_review.core.stages import build_default_pipeline
 from design_review.knowledge import YamlKnowledgeProvider
 from design_review.providers import LiteLLMBackend
 
-# 每条种子案例的"含 bug 方案"探针（人工构造，模拟真实会写出的错误代码/方案）
+# 每条种子案例的"含 bug 方案"探针（人工构造，模拟真实会写出的错误代码/方案）。
+# 这些探针对应 framework 随包的【通用】案例。项目特定案例（自家网络同步设计等）在本地
+# <项目>/.design-review/knowledge/，不在公开库——用本项目做 meta-eval 时另起本地脚本追加。
 PROBES = {
     "ECS-BURST-001": "在 ISystem.OnUpdate 里调 [BurstCompile] static void Foo(MyStruct s) 按值传 struct。",
-    "ECS-BURST-002": "在 [BurstCompile] 方法里读 static bool EnableTiming 这个运行时开关决定是否计时。",
+    "ECS-BURST-002": "在 [BurstCompile] 方法里读 static bool Enable 这个运行时开关字段决定是否执行。",
     "ECS-BURST-003": "在 Burst job 里用 Stopwatch.GetTimestamp() 做高精度计时。",
-    "NET-001": "在 prediction system 里读 IInputComponentData.***REMOVED*** 组件值判断当前瞄准状态。",
-    "NET-003": "ApplyDamage 里直接读 Health 组件判断实体是否可伤害。",
-    "NET-005": "用 SystemAPI.Query<***REMOVED***>() 遍历带 [GhostEnabledBit] 的组件。",
+    "NET-PREDICT-TICK": "在 prediction system 里直接读 IInputComponentData 的字段判断当前输入状态。",
+    "NET-GHOSTBIT-QUERY": "用 SystemAPI.Query<MyGhostEnabledBitComp>() 遍历带 [GhostEnabledBit] 的组件。",
     "ECS-STRUCT-001": "托管 OnUpdate 里 foreach 遍历 DynamicBuffer 的同时 EntityManager.CreateEntity。",
     "ECS-STRUCT-002": "if (query == null) query = GetEntityQuery(...); 然后 query.ToEntityArray()。",
     "ECS-STRUCT-004": "OnUpdate 里 GetSingleton<T>() 但 OnCreate 没配 RequireForUpdate<T>()。",
-    "FF-001": "FlowField cost field 只从 GreedyRectBlockBuffer 取数据生成，不查物理 collider。",
+    "FF-001": "FlowField cost field 只从渲染方块 buffer 取数据生成，不查物理 collider。",
 }
 
 
 async def main() -> None:
     a = UnityAdapter(str(UNITY_PROJECT))
-    kp = YamlKnowledgeProvider(a.knowledge_dir())
+    dirs = [a.knowledge_dir()]
+    if a.local_knowledge_dir().exists():
+        dirs.append(a.local_knowledge_dir())
+    kp = YamlKnowledgeProvider(dirs)
     eng = ReviewEngine(
         adapter=a, backend=LiteLLMBackend(), knowledge=kp,
         pipeline=build_default_pipeline(),
