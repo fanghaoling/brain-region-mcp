@@ -27,6 +27,33 @@ ReviewDocument → RetrieveStage → ContextStage → PromptStage → ReviewStag
 
 防冷门技术栈"共谋错误"：强制 `evidence_quote`（无引用丢弃）+ 知识库 RAG（版本过滤）+ 角色化 reviewer（独立 system_prompt+采样）+ canonical normalize（防同义漏报）+ calibrated confidence。
 
+## 知识库（重要：框架只带通用种子，你项目的踩坑要自己加）
+
+**工具的审查质量 = 知识库厚度。** 框架随包只带**通用**种子案例（Unity ECS/Burst/FlowField/NetCode 的 API 级 gotcha，见 `design_review/adapters/unity/knowledge/`，共十余条）。你项目**自己的**踩坑（架构决策、历史 bug、约定）不会自动有——得自己积累，这才是工具对你项目的护城河，也是别人 clone 走也拿不走的部分。
+
+### 放哪
+`<项目根>/.design-review/knowledge/*.yaml`（项目本地）。框架知识库 + 本地知识库自动叠加（本地同 id 覆盖框架）。建议把项目特定 / 敏感内容放本地并 gitignore。
+
+### 格式
+```yaml
+- id: MYSYSTEM-001              # 唯一 id，finding 引用它做 case_ref（跨模型共识锚点）
+  title: "一句话踩坑"
+  version: {entities: ">=1.4,<2.0"}   # 版本约束（空=通用）；retrieve 按项目版本过滤
+  triggers: [关键词1, 关键词2]          # retrieve 按这些词命中方案文本（大小写不敏感）
+  category: ecs_perf                   # 组织用；case_ref 命中时填到 finding.dimension
+  bad_pattern: "反模式描述（会进 prompt 给模型看）"
+  recommended_pattern: "正解"
+  source: "MEMORY.md#xxx"              # 给人追溯，不进 prompt
+```
+
+### 怎么积累
+- 从你的 `MEMORY.md` / postmortem / bug tracker / 反复出现的 code review 意见转写
+- 每条聚焦**一个具体可复现**的 gotcha（bad_pattern + recommended_pattern 要可操作，别写空泛原则）
+- `triggers` 写**方案文本里会出现的词**（API 名、错误码、组件名、USS 属性），retrieve 才能命中——这是召回关键
+- 通用 gotcha（任何同栈项目都踩）可贡献回框架；项目特定的放本地
+
+> 用 `list_knowledge` 工具看当前加载了哪些案例；案例少或方案涉及的领域没有对应踩坑，就是该扩了。
+
 ## 安装
 
 ```bash
