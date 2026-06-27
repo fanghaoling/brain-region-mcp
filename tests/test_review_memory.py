@@ -300,3 +300,70 @@ def test_lookup_finds_in_majority_bucket(isolated_db):
     assert phash == "h1"
     assert label == "gpt-4o"
     assert dim == "safety"
+
+
+# ===== v2.1 parse dimension 强制 reviewer（修复 LLM 子维度不稳定）=====
+
+def test_parse_dimension_forced_to_reviewer():
+    """parse 强制 dimension=reviewer（dim），丢弃 LLM 填的子维度（Migration/Rollback/..）。
+    LLM 自由填的 dimension 不稳定 → (label,dim) reliability key 永不命中。"""
+    ctx = PipelineContext(document=None, adapter=_MockAdapter(), backend=None, knowledge=None)
+    ctx.responses = [
+        {"model": "gpt-4o", "dimension": "planner", "response": ModelResponse(
+            model="gpt-4o",
+            content='{"issues":[{"dimension":"Migration","severity":"high","title":"a",'
+                    '"evidence_quote":"q","location":"l","suggestion":"s","confidence":0.9}]}')},
+    ]
+    ctx.retrieved_cases = []
+    asyncio.run(ParseStage().process(ctx))
+    assert ctx.findings[0].dimension == "planner"  # reviewer dim，非 LLM 填的 Migration
+
+
+# ===== v2.1 软失效（修复 mark_finding 连续标断链）=====
+
+def test_invalidate_soft_keeps_report(isolated_db):
+    """invalidate 标 stale 不删行：lookup 命中 miss，但 lookup_report 仍可反查。"""
+    report = {"individual": {"gpt-4o": [{"id": "gpt-4o-0", "model": "gpt-4o",
+                "dimension": "planner", "severity": "high", "title": "t",
+                "evidence_quote": "q", "location": "l", "suggestion": "s", "confidence": 0.9}]}}
+    reviews_db.record(params_hash="h1", report_dict=report, adapter="unity", panel=["gpt-4o"])
+    assert reviews_db.invalidate_review_cache("h1") is True
+    assert reviews_db.lookup("h1") is None  # stale → 命中 miss（强制重算）
+    rep = reviews_db.lookup_report("h1")     # 软失效保留 report_json，mark_finding 反查可用
+    assert rep is not None
+    assert rep["individual"]["gpt-4o"][0]["id"] == "gpt-4o-0"
+
+
+def test_record_overwrites_stale_row(isolated_db):
+    """record ON CONFLICT 覆盖 stale 行 + 重置 stale=0（重算后可再命中）。"""
+    reviews_db.record(params_hash="h1", report_dict={"v": 1}, adapter="unity", panel=["gpt-4o"])
+    reviews_db.invalidate_review_cache("h1")
+    assert reviews_db.lookup("h1") is None
+    reviews_db.record(params_hash="h1", report_dict={"v": 2}, adapter="unity", panel=["gpt-4o"])
+    hit = reviews_db.lookup("h1")
+    assert hit is not None
+    assert hit["report"]["v"] == 2  # 新 report 覆盖（非 INSERT OR IGNORE 的旧值）
+
+
+def test_mark_finding_consecutive_marks_no_break(isolated_db):
+    """连续标同 review 多条 finding（默认 invalidate=True）不断链。
+    原 bug：第 1 条 DELETE report → 第 2 条 lookup_report=None → raise ValueError。"""
+    from design_review.server import mark_finding
+    report = {
+        "document_type": "markdown", "adapter": "unity", "project_version": {},
+        "panel": ["gpt-4o"], "failed_models": [], "retrieved_cases": [],
+        "consensus": [], "majority": [],
+        "individual": {"gpt-4o": [
+            {"id": "gpt-4o-0", "model": "gpt-4o", "dimension": "planner", "severity": "high",
+             "title": "t0", "evidence_quote": "q", "location": "l", "suggestion": "s", "confidence": 0.9},
+            {"id": "gpt-4o-1", "model": "gpt-4o", "dimension": "planner", "severity": "high",
+             "title": "t1", "evidence_quote": "q", "location": "l", "suggestion": "s", "confidence": 0.9},
+        ]},
+        "knowledge_hit": [], "usage": {}, "summary": "", "risk": {},
+    }
+    reviews_db.record(params_hash="h1", report_dict=report, adapter="unity", panel=["gpt-4o"])
+    r0 = mark_finding(finding_id="gpt-4o-0", decision="rejected", params_hash="h1")  # 默认 invalidate=True
+    r1 = mark_finding(finding_id="gpt-4o-1", decision="rejected", params_hash="h1")  # 不应断链
+    assert r0["ok"] is True and r1["ok"] is True
+    assert r1["label"] == "gpt-4o" and r1["dimension"] == "planner"
+    assert reviews_db.lookup("h1") is None  # stale，下次重算才命中

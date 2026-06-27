@@ -40,10 +40,17 @@ def _connect() -> sqlite3.Connection:
             panel TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             reuse_count INTEGER DEFAULT 0,
-            last_used_at TEXT
+            last_used_at TEXT,
+            stale INTEGER DEFAULT 0
         )
         """
     )
+    # v2.1 软失效：旧表兼容加 stale 列（invalidate 不再删 report_json，防 mark_finding
+    # 连续标多条时第一条失效后后续反查断链）
+    try:
+        conn.execute("ALTER TABLE reviews ADD COLUMN stale INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
     # v2 Review Memory：finding 采纳反馈。reliability 是 (label, dimension) 维度——
     # dimension=reviewer 身份（prompt.py:148 按 dimension 加载 reviewer yaml）。
     # 不复用 reviews（reviews 是 INSERT OR IGNORE 的 1:1 cache 语义）；多对一且可变。
@@ -96,7 +103,7 @@ def lookup(params_hash: str) -> dict | None:
     try:
         conn = _connect()
         row = conn.execute(
-            "SELECT * FROM reviews WHERE params_hash=?", (params_hash,)
+            "SELECT * FROM reviews WHERE params_hash=? AND stale=0", (params_hash,)
         ).fetchone()
         if row is None:
             return None
@@ -121,9 +128,14 @@ def record(
 ) -> None:
     try:
         conn = _connect()
+        # v2.1：ON CONFLICT 覆盖（原 INSERT OR IGNORE）。invalidate 软失效标 stale=1 后，
+        # 重算 record 须覆盖该行并把 stale 重置 0（IGNORE 会让 stale 行永驻不重算）。
         conn.execute(
-            "INSERT OR IGNORE INTO reviews(params_hash, report_json, adapter, panel) "
-            "VALUES(?,?,?,?)",
+            "INSERT INTO reviews(params_hash, report_json, adapter, panel) "
+            "VALUES(?,?,?,?) "
+            "ON CONFLICT(params_hash) DO UPDATE SET "
+            "  report_json=excluded.report_json, adapter=excluded.adapter, "
+            "  panel=excluded.panel, stale=0",
             (
                 params_hash,
                 json.dumps(report_dict, ensure_ascii=False),
@@ -220,10 +232,13 @@ def model_reliability(panel_labels: list[str]) -> dict[tuple[str, str], float]:
 
 
 def invalidate_review_cache(params_hash: str) -> bool:
-    """删除某 review 缓存，强制下次重算（reliability 变了）。返回是否删到。"""
+    """标某 review 缓存为 stale（软失效，不删 report_json——防 mark_finding 连续标
+    多条时第一条失效后后续反查 report 断链）。lookup 命中需 stale=0，故强制下次重算。"""
     try:
         conn = _connect()
-        cur = conn.execute("DELETE FROM reviews WHERE params_hash=?", (params_hash,))
+        cur = conn.execute(
+            "UPDATE reviews SET stale=1 WHERE params_hash=?", (params_hash,)
+        )
         conn.commit()
         return cur.rowcount > 0
     except Exception as e:  # noqa: BLE001

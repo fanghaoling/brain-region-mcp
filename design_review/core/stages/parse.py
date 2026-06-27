@@ -158,7 +158,10 @@ class ParseStage:
                     Finding(
                         id=f"{model}-{seq}",  # v2 评审内稳定 id，mark_finding 引用
                         model=model,
-                        dimension=nf.get("dimension", dim),
+                        # v2 修复：强制 reviewer dim（稳定）。LLM 常把 dimension 自由填成子维度
+                        # （Migration/Rollback/Testing/...），不稳定 → (label, dim) reliability key
+                        # 永不命中。细粒度分类信息已在 title/location，dimension 统一为 reviewer。
+                        dimension=dim,
                         severity=nf["severity"],
                         title=nf["title"],
                         evidence_quote=nf["evidence_quote"],
