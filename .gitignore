@@ -4,11 +4,23 @@ __pycache__/
 .venv/
 .uv-cache/
 .pytest_cache/
+.ruff_cache/
 dist/
 build/
 *.db
 .env
 .env.local
+
+# Local config files
+brain_region_config.json*
 design_review_config.json*
-# 本地一次性验证脚本（常含项目特定方案文本，不上传）
+
+# Local generated project data
+Assets/
+
+# Local one-off verification scripts
 scripts/verify_*
+
+# Local long-term planning notes (not uploaded)
+docs/ai_collaboration_roadmap.zh-CN.md
+docs/roadmap_backups/
