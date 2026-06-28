@@ -253,6 +253,29 @@ def _resolve_consultants(consultants: list[str] | None, mode: str | None, defaul
     return list(defaults.get("consult_consultants") or []), None
 
 
+def _resolve_consult_panel(panel: list[str] | None, defaults: dict) -> tuple[list, str]:
+    """Resolve consult panel and track the source for debugging/testing."""
+    if panel is not None:
+        return panel, "explicit"
+    if defaults.get("consult_panel"):
+        return defaults.get("consult_panel") or [], "consult_panel"
+    return defaults.get("panel") or [], "panel"
+
+
+def _resolve_consultants_with_source(
+    consultants: list[str] | None, mode: str | None, defaults: dict
+) -> tuple[list[str], str | None, str, str]:
+    """Resolve consultant roles and source labels for routing metadata."""
+    effective_mode = mode if mode is not None else defaults.get("consult_mode")
+    mode_source = "explicit" if mode is not None else ("consult_mode" if defaults.get("consult_mode") else "none")
+    if consultants is not None:
+        return list(consultants), effective_mode, "explicit", mode_source
+    if effective_mode:
+        resolved, mode_used = _resolve_consultants(None, effective_mode, defaults)
+        return resolved, mode_used, "mode", mode_source
+    return list(defaults.get("consult_consultants") or []), None, "consult_consultants", mode_source
+
+
 def _rebuild_report(d: dict) -> ReviewReport:
     """从缓存的 dict 重建 ReviewReport（dataclass 字段过滤，忽略 cache_hit 等额外字段）。"""
     cf_fields = CanonicalFinding.__dataclass_fields__
@@ -369,6 +392,30 @@ def mark_finding(
         raise
     except Exception as e:  # noqa: BLE001 — 不抛错，返回 ok=False（v1.8 降级规范）
         return {"ok": False, "finding_id": finding_id, "error": str(e)}
+
+
+@mcp.tool()
+def mark_advice(
+    advice_id: str,
+    decision: str,
+    consultation_id: str | None = None,
+    reason: str = "",
+    outcome: str = "",
+) -> dict:
+    """标记一条外援 advice 是否有用，写入 Advice Memory。
+
+    advice_id/consultation_id 从 consult_problem 返回取。decision:
+    accepted|rejected|partial|unknown。只记录最小反馈元数据和用户反馈文本，不保存原始
+    prompt、问题正文或 advice 全文。
+    """
+    res = reviews_db.record_advice_feedback(
+        advice_id=advice_id,
+        consultation_id=consultation_id,
+        decision=decision,
+        reason=reason,
+        outcome=outcome,
+    )
+    return {"ok": True, **res}
 
 
 @mcp.tool()
@@ -543,9 +590,9 @@ async def consult_problem(
     """
     dd = _defaults_mod.apply(effort=effort)
     endpoint_ids = set((dd.get("endpoints") or {}).keys())
-    raw_panel = panel if panel is not None else (dd.get("consult_panel") or dd.get("panel") or [])
+    raw_panel, panel_source = _resolve_consult_panel(panel, dd)
     panel_used = _normalize_panel(raw_panel, endpoint_ids, dd.get("endpoints"))
-    consultants_used, mode_used = _resolve_consultants(consultants, mode, dd)
+    consultants_used, mode_used, consultants_source, mode_source = _resolve_consultants_with_source(consultants, mode, dd)
     cost_limit = max_cost_usd if max_cost_usd is not None else dd.get("consult_max_cost_usd")
     if cost_limit is None:
         cost_limit = dd.get("max_cost_usd")
@@ -576,6 +623,15 @@ async def consult_problem(
     result["panel"] = [entry["label"] for entry in panel_used]
     result["consultants"] = list(consultants_used)
     result["mode"] = mode_used
+    result["routing"] = {
+        "panel_source": panel_source,
+        "mode_source": mode_source,
+        "consultants_source": consultants_source,
+        "resolved_panel": [entry["label"] for entry in panel_used],
+        "resolved_consultants": list(consultants_used),
+    }
+    # 只记录 consult 元数据与 advice id，不记录 prompt/问题正文/advice 全文。
+    reviews_db.record_consultation(result)
     return result
 
 
@@ -633,7 +689,7 @@ def list_defaults() -> dict:
 @mcp.tool()
 def panel_stats() -> dict:
     """缓存统计：审查总数 + 缓存命中省掉的重复审查数。"""
-    return reviews_db.stats()
+    return {**reviews_db.stats(), **reviews_db.advice_feedback_stats()}
 
 
 def main() -> None:

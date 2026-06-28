@@ -16,6 +16,7 @@ def _extend_unique(target: list[str], values: list[str], *, limit: int) -> None:
 
 def synthesize_report(
     *,
+    consultation_id: str,
     advice: list[ConsultAdvice],
     failed_models: list[dict],
     usage: dict,
@@ -24,6 +25,7 @@ def synthesize_report(
 ) -> ConsultReport:
     if not advice:
         return ConsultReport(
+            consultation_id=consultation_id,
             summary="外援会诊未获得可用模型输出。",
             confidence=0.0,
             failed_models=failed_models,
@@ -55,6 +57,7 @@ def synthesize_report(
         disagreements.append("外援给出了多个不同方案方向，建议先按 next_experiments 验证根因后再选实现路径。")
 
     return ConsultReport(
+        consultation_id=consultation_id,
         summary=summary,
         likely_causes=likely_causes,
         next_experiments=next_experiments,

@@ -73,6 +73,18 @@ consult_problem(
 - `simplicity`：简化/YAGNI。
 - `planning`：任务拆解。
 
+如果某条外援建议真的有用，拿返回里的 `consultation_id` 和 `individual[].id` 标记：
+
+```python
+mark_advice(
+    advice_id="consult-abc123-0",
+    consultation_id="consult-abc123",
+    decision="accepted",
+    reason="帮助定位到真实问题",
+    outcome="已按建议补测试"
+)
+```
+
 ---
 
 ## 中转站 / 自定义 endpoint（OpenAI/Anthropic 兼容网关）

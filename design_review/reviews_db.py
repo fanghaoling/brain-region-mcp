@@ -71,6 +71,56 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_fb_label_dim ON finding_feedback(label, dimension)"
     )
+    # Consultation Memory：只存元数据，不存用户 prompt / logs / files / advice 全文。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS consultations (
+            consultation_id TEXT PRIMARY KEY,
+            routing_json TEXT DEFAULT '{}',
+            panel TEXT DEFAULT '[]',
+            consultants TEXT DEFAULT '[]',
+            mode TEXT DEFAULT '',
+            usage_json TEXT DEFAULT '{}',
+            budget_json TEXT DEFAULT '{}',
+            guard_json TEXT DEFAULT '{}',
+            advice_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS consultation_advice (
+            advice_id TEXT PRIMARY KEY,
+            consultation_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            consultant TEXT NOT NULL,
+            confidence REAL DEFAULT 0.0,
+            summary_hash TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consult_advice_cid ON consultation_advice(consultation_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS advice_feedback (
+            advice_id TEXT PRIMARY KEY,
+            consultation_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            consultant TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            outcome TEXT DEFAULT '',
+            decided_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_advice_fb_model_consultant ON advice_feedback(model, consultant)"
+    )
     conn.commit()
     return conn
 
@@ -165,6 +215,7 @@ def stats() -> dict:
 
 # decision 枚举（record_feedback / model_reliability 共享，防漂移）
 VALID_DECISIONS = {"accepted", "rejected", "partial"}
+VALID_ADVICE_DECISIONS = {"accepted", "rejected", "partial", "unknown"}
 # decision → 可靠度得分（model_reliability 聚合用）
 _DECISION_SCORE = {"accepted": 1.0, "partial": 0.5, "rejected": 0.0}
 _MIN_SAMPLE = 5  # (label,dim) 样本 < 此值 → 不进 reliability（调用方 .get(key,1.0) 兜底，向后兼容）
@@ -196,6 +247,164 @@ def record_feedback(
         conn.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("reviews_db record_feedback 失败: %s", e)
+
+
+# ===== Consultation Memory：advice 元数据 + 采纳反馈 =====
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def record_consultation(report_dict: dict) -> None:
+    """记录一次 consult 的最小元数据。
+
+    不保存 problem/context/files/logs/prompt/advice 原文，只保存路由、用量、预算、guard
+    和 advice 的稳定 id/model/consultant/confidence/summary_hash，供 mark_advice 反查。
+    """
+    cid = (report_dict or {}).get("consultation_id")
+    if not cid:
+        raise ValueError("consultation_id 不能为空")
+    individual = [a for a in (report_dict.get("individual") or []) if isinstance(a, dict)]
+    try:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO consultations("
+            "consultation_id, routing_json, panel, consultants, mode, usage_json, budget_json, guard_json, advice_count"
+            ") VALUES(?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(consultation_id) DO UPDATE SET "
+            "  routing_json=excluded.routing_json, panel=excluded.panel, consultants=excluded.consultants, "
+            "  mode=excluded.mode, usage_json=excluded.usage_json, budget_json=excluded.budget_json, "
+            "  guard_json=excluded.guard_json, advice_count=excluded.advice_count",
+            (
+                cid,
+                json.dumps(report_dict.get("routing") or {}, ensure_ascii=False),
+                json.dumps(report_dict.get("panel") or [], ensure_ascii=False),
+                json.dumps(report_dict.get("consultants") or [], ensure_ascii=False),
+                report_dict.get("mode") or "",
+                json.dumps(report_dict.get("usage") or {}, ensure_ascii=False),
+                json.dumps(report_dict.get("budget") or {}, ensure_ascii=False),
+                json.dumps(report_dict.get("guard") or {}, ensure_ascii=False),
+                len(individual),
+            ),
+        )
+        for advice in individual:
+            aid = advice.get("id")
+            model = advice.get("model")
+            consultant = advice.get("consultant")
+            if not aid or not model or not consultant:
+                continue
+            conn.execute(
+                "INSERT INTO consultation_advice("
+                "advice_id, consultation_id, model, consultant, confidence, summary_hash"
+                ") VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(advice_id) DO UPDATE SET "
+                "  consultation_id=excluded.consultation_id, model=excluded.model, "
+                "  consultant=excluded.consultant, confidence=excluded.confidence, "
+                "  summary_hash=excluded.summary_hash",
+                (
+                    aid,
+                    cid,
+                    model,
+                    consultant,
+                    float(advice.get("confidence") or 0.0),
+                    _text_hash(advice.get("summary") or ""),
+                ),
+            )
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("reviews_db record_consultation 失败: %s", e)
+
+
+def lookup_advice(advice_id: str) -> dict | None:
+    """按 advice_id 查最小元数据，不返回 advice 原文。"""
+    try:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT advice_id, consultation_id, model, consultant, confidence, summary_hash "
+            "FROM consultation_advice WHERE advice_id=?",
+            (advice_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("reviews_db lookup_advice 失败: %s", e)
+        return None
+
+
+def record_advice_feedback(
+    *,
+    advice_id: str,
+    decision: str,
+    consultation_id: str | None = None,
+    reason: str = "",
+    outcome: str = "",
+) -> dict:
+    """记录 advice 是否有用（UPSERT）。
+
+    advice_id 必须先由 record_consultation 落过元数据。consultation_id 可选；传入时作
+    一致性校验。reason/outcome 限长，只存用户反馈，不存原始 advice/prompt。
+    """
+    if not advice_id:
+        raise ValueError("advice_id 不能为空")
+    if decision not in VALID_ADVICE_DECISIONS:
+        raise ValueError(f"decision 必须是 {sorted(VALID_ADVICE_DECISIONS)}，得到 {decision!r}")
+    advice = lookup_advice(advice_id)
+    if advice is None:
+        raise ValueError(f"找不到 advice_id={advice_id!r}，请先调用 consult_problem 并使用返回的 advice id")
+    if consultation_id and advice["consultation_id"] != consultation_id:
+        raise ValueError(
+            f"advice_id={advice_id!r} 属于 consultation_id={advice['consultation_id']!r}，不是 {consultation_id!r}"
+        )
+    reason = (reason or "").strip()[:2000]
+    outcome = (outcome or "").strip()[:2000]
+    try:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO advice_feedback(advice_id, consultation_id, model, consultant, decision, reason, outcome) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(advice_id) DO UPDATE SET "
+            "  decision=excluded.decision, reason=excluded.reason, outcome=excluded.outcome, "
+            "  decided_at=datetime('now')",
+            (
+                advice_id,
+                advice["consultation_id"],
+                advice["model"],
+                advice["consultant"],
+                decision,
+                reason,
+                outcome,
+            ),
+        )
+        conn.commit()
+        return {
+            "advice_id": advice_id,
+            "consultation_id": advice["consultation_id"],
+            "model": advice["model"],
+            "consultant": advice["consultant"],
+            "decision": decision,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("reviews_db record_advice_feedback 失败: %s", e)
+        raise
+
+
+def advice_feedback_stats() -> dict:
+    """咨询建议反馈统计（不含原文）。"""
+    try:
+        conn = _connect()
+        total_advice = conn.execute("SELECT COUNT(*) c FROM consultation_advice").fetchone()["c"]
+        total_feedback = conn.execute("SELECT COUNT(*) c FROM advice_feedback").fetchone()["c"]
+        by_decision = {
+            r["decision"]: r["c"]
+            for r in conn.execute("SELECT decision, COUNT(*) c FROM advice_feedback GROUP BY decision").fetchall()
+        }
+        return {
+            "total_advice": total_advice,
+            "total_advice_feedback": total_feedback,
+            "advice_feedback_by_decision": by_decision,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("reviews_db advice_feedback_stats 失败: %s", e)
+        return {"total_advice": 0, "total_advice_feedback": 0, "advice_feedback_by_decision": {}}
 
 
 def model_reliability(

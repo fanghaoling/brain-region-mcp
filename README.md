@@ -98,6 +98,22 @@ Recommended config:
 If `consult_panel` is not configured, consultation falls back to `panel`. For day-to-day use, keep a cheaper/faster
 consult panel so one consultation does not expand the full review panel.
 
+`consult_problem` returns a `consultation_id`, and each item in `individual` has a stable advice `id`. Mark useful or
+unhelpful advice with Advice Memory:
+
+```python
+mark_advice(
+    advice_id="consult-abc123-0",
+    consultation_id="consult-abc123",
+    decision="accepted",
+    reason="identified the real race condition",
+    outcome="added the suggested minimal reproduction test",
+)
+```
+
+`decision` is one of `accepted`, `rejected`, `partial`, or `unknown`. The database stores advice metadata and user
+feedback, not the original prompt, problem text, or full advice body.
+
 ## Knowledge Base
 
 Review quality depends heavily on project knowledge. Built-in adapter packages may ship seed cases, but the most useful

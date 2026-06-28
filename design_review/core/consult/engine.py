@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,9 @@ class ConsultEngine:
         max_input_chars: int = 24000,
         max_cost_usd: float | None = None,
         effort: str | None = None,
+        consultation_id: str | None = None,
     ) -> ConsultReport:
+        consultation_id = consultation_id or f"consult-{uuid.uuid4().hex[:12]}"
         sanitized, guard_meta = prepare_request(request, max_input_chars=max_input_chars)
         available = set(list_consultants(self.consultants_dir))
         unknown = [name for name in consultants if name not in available]
@@ -73,6 +76,7 @@ class ConsultEngine:
         }
         if not jobs:
             return synthesize_report(
+                consultation_id=consultation_id,
                 advice=[],
                 failed_models=[],
                 usage={"total_tokens": 0, "cost_usd": 0.0},
@@ -98,7 +102,7 @@ class ConsultEngine:
         failed_models: list[dict] = []
         total_tokens = 0
         cost_usd = 0.0
-        counters: dict[str, int] = {}
+        advice_index = 0
 
         for raw in raw_results:
             if isinstance(raw, Exception):
@@ -126,13 +130,11 @@ class ConsultEngine:
                     }
                 )
                 continue
-            seq = counters.get(label, 0)
-            counters[label] = seq + 1
             parsed = parse_advice(
                 resp.content,
                 model=label,
                 consultant=consultant,
-                advice_id=f"{label}/{consultant}-{seq}",
+                advice_id=f"{consultation_id}-{advice_index}",
             )
             if parsed is None:
                 failed_models.append(
@@ -146,8 +148,10 @@ class ConsultEngine:
                 )
             else:
                 advice.append(parsed)
+                advice_index += 1
 
         return synthesize_report(
+            consultation_id=consultation_id,
             advice=advice,
             failed_models=failed_models,
             usage={"total_tokens": total_tokens, "cost_usd": round(cost_usd, 6)},

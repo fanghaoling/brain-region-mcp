@@ -95,6 +95,20 @@ consult_problem(
 
 如果没有配置 `consult_panel`，会诊会回退到 `panel`。生产使用建议单独配置较便宜、响应快的 `consult_panel`，避免一次会诊展开完整审查面板。
 
+`consult_problem` 返回 `consultation_id`，每条 `individual` advice 也带稳定 `id`。如果某条建议有用或无用，可以反馈给 Advice Memory：
+
+```python
+mark_advice(
+    advice_id="consult-abc123-0",
+    consultation_id="consult-abc123",
+    decision="accepted",
+    reason="定位到了实际竞态",
+    outcome="按建议加了最小复现测试"
+)
+```
+
+`decision` 可选 `accepted` / `rejected` / `partial` / `unknown`。系统只记录 advice 元数据和用户反馈，不保存原始 prompt、问题正文或完整 advice 文本。
+
 ## 知识库
 
 审查质量很依赖项目知识。内置 adapter 包可以带一些种子案例，但最有价值的架构决策、历史 bug 和团队约定，通常还是应该放在项目本地知识库里。

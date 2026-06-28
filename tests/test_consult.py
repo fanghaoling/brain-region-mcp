@@ -4,10 +4,12 @@ import json
 
 import pytest
 
+from design_review import reviews_db
 from design_review.core.consult import ConsultEngine, ConsultRequest
 from design_review.core.consult.guard import prepare_request
 from design_review.core.consult.parse import parse_advice
 from design_review.core.consult.prompt import render_consult_prompt
+from design_review.core.consult.report import ConsultAdvice, ConsultReport
 from design_review.core.consultants import CONSULTANTS_DIR
 from design_review.core.consultants.loader import load_consultant
 from design_review.providers.base import ModelResponse
@@ -100,6 +102,122 @@ def test_consult_mode_resolution():
     assert _resolve_consultants(None, "challenge", defaults) == (["challenge", "critic"], "challenge")
     assert _resolve_consultants(["debugger"], "challenge", defaults) == (["debugger"], "challenge")
     assert _resolve_consultants(None, None, defaults) == (["debugger", "critic"], None)
+
+
+@pytest.mark.asyncio
+async def test_consult_problem_routing_metadata(monkeypatch):
+    from design_review import server
+
+    class _FakeEngine:
+        async def consult(self, *args, **kwargs):
+            return ConsultReport(
+                consultation_id="consult-route",
+                summary="ok",
+                confidence=0.5,
+                individual=[
+                    ConsultAdvice(
+                        id="consult-route-0",
+                        model="fast-model",
+                        consultant="debugger",
+                        summary="ok",
+                        confidence=0.5,
+                    )
+                ],
+                usage={"total_tokens": 1, "cost_usd": 0.0},
+                budget={"jobs_run": 1, "jobs_total": 1},
+                guard={},
+            )
+
+    monkeypatch.setattr(
+        server._defaults_mod,
+        "apply",
+        lambda **kwargs: {
+            "endpoints": {},
+            "consult_panel": ["fast-model"],
+            "panel": ["slow-model"],
+            "consult_consultants": ["debugger"],
+            "consult_max_input_chars": 1000,
+            "consult_max_cost_usd": 0.01,
+            "effort": None,
+        },
+    )
+    monkeypatch.setattr(server, "_build_consult_engine", lambda dd: _FakeEngine())
+
+    result = await server.consult_problem(problem="x")
+    assert result["consultation_id"] == "consult-route"
+    assert result["panel"] == ["fast-model"]
+    assert result["routing"]["panel_source"] == "consult_panel"
+    assert result["routing"]["consultants_source"] == "consult_consultants"
+
+    challenge = await server.consult_problem(problem="x", mode="challenge")
+    assert challenge["mode"] == "challenge"
+    assert challenge["consultants"] == ["challenge", "critic"]
+    assert challenge["routing"]["consultants_source"] == "mode"
+
+
+def test_record_consultation_and_mark_advice():
+    from design_review.server import mark_advice
+
+    report = {
+        "consultation_id": "consult-test",
+        "routing": {"panel_source": "consult_panel"},
+        "panel": ["model-a"],
+        "consultants": ["debugger"],
+        "mode": "debugging",
+        "usage": {"total_tokens": 10},
+        "budget": {"jobs_run": 1},
+        "guard": {"sent_chars": 20},
+        "individual": [
+            {
+                "id": "consult-test-0",
+                "model": "model-a",
+                "consultant": "debugger",
+                "summary": "SECRET_PROMPT_CONTENT should not be stored",
+                "confidence": 0.7,
+            }
+        ],
+    }
+    reviews_db.record_consultation(report)
+    advice = reviews_db.lookup_advice("consult-test-0")
+    assert advice is not None
+    assert advice["consultation_id"] == "consult-test"
+    assert advice["model"] == "model-a"
+
+    res = mark_advice(
+        advice_id="consult-test-0",
+        consultation_id="consult-test",
+        decision="accepted",
+        reason="helped",
+        outcome="fixed",
+    )
+    assert res["ok"] is True
+    assert res["consultant"] == "debugger"
+
+    rows = reviews_db._connect().execute("SELECT * FROM advice_feedback").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["decision"] == "accepted"
+    dumped = "\n".join(str(dict(row)) for row in reviews_db._connect().execute("SELECT * FROM consultation_advice"))
+    assert "SECRET_PROMPT_CONTENT" not in dumped
+
+
+def test_mark_advice_rejects_missing_or_mismatched_advice():
+    from design_review.server import mark_advice
+
+    with pytest.raises(ValueError, match="找不到 advice_id"):
+        mark_advice(advice_id="missing-0", decision="accepted")
+
+    reviews_db.record_consultation(
+        {
+            "consultation_id": "consult-a",
+            "individual": [
+                {"id": "consult-a-0", "model": "model-a", "consultant": "debugger", "summary": "s"}
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="不是"):
+        mark_advice(advice_id="consult-a-0", consultation_id="other", decision="accepted")
+    with pytest.raises(ValueError, match="decision"):
+        mark_advice(advice_id="consult-a-0", decision="maybe")
 
 
 @pytest.mark.asyncio

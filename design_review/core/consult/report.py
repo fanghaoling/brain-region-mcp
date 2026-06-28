@@ -45,6 +45,7 @@ class ConsultAdvice:
 class ConsultReport:
     """Stable MCP-facing consultation result."""
 
+    consultation_id: str = ""
     summary: str = ""
     likely_causes: list[str] = field(default_factory=list)
     next_experiments: list[str] = field(default_factory=list)
@@ -58,9 +59,11 @@ class ConsultReport:
     usage: dict = field(default_factory=dict)
     budget: dict = field(default_factory=dict)
     guard: dict = field(default_factory=dict)
+    routing: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
+            "consultation_id": self.consultation_id,
             "summary": self.summary,
             "likely_causes": list(self.likely_causes),
             "next_experiments": list(self.next_experiments),
@@ -74,4 +77,5 @@ class ConsultReport:
             "usage": dict(self.usage),
             "budget": dict(self.budget),
             "guard": dict(self.guard),
+            "routing": dict(self.routing),
         }
