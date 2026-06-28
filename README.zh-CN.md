@@ -2,25 +2,93 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`design-review-mcp` 是一个用于“对抗式设计审查”的 MCP server 和 CLI。它可以把方案、代码或文档分发给多个模型 reviewer，并结合项目知识库、finding 归一化和共识汇总，生成更适合工程决策的审查报告。
+`design-review-mcp` 是一个用于对抗式设计审查的 MCP server 和 CLI。它会把方案、代码变更或文档分发给多个 LLM reviewer，结合项目知识库检索、finding 归一化和共识汇总，生成更容易落地处理的审查报告。
 
-这个工具面向本地工程工作流：当前内置 `generic` 和 `unity` adapter，Unity ECS 是重点适配方向；核心 pipeline 保持项目无关，后续可以继续扩展到其它项目类型。
+核心 pipeline 保持项目无关，项目特定行为放在 adapter 中。当前内置 `generic` 和 `unity` adapter，Unity ECS/NetCode/Burst 是第一个重点适配方向。
 
-## 能做什么
+## 功能概览
 
-- 审查方案、代码、ADR、RFC、Markdown 和配置文档。
+- 审查方案、代码、Markdown、ADR、RFC 和配置文档。
 - 支持 `planner`、`safety`、`architecture`、`performance`、`feasibility`、`visionary` 等 reviewer 角色。
-- 支持 `generic` 和 `unity` 项目 adapter。
-- 支持官方 LiteLLM 模型字符串，也支持 OpenAI/Anthropic 兼容中转站。
-- 支持 builtin、全局配置、项目配置、环境变量、显式参数的分层默认值。
-- 支持 Review Memory：标记 finding 是否采纳后，后续审查可据此调整模型可信度。
+- 支持单模型或多模型 panel，包括官方 LiteLLM provider 和 OpenAI/Anthropic 兼容中转站。
+- 审查前检索框架知识库和项目本地知识库。
+- 将重复 finding 归一到 canonical bucket，并区分 consensus、majority、individual。
+- 支持 JSON、Markdown、SARIF 输出。
+- 支持 Review Memory：通过 `mark_finding` 记录 finding 是否采纳，后续用于校准模型可信度。
+- 支持 builtin、全局配置、项目配置、环境变量、显式调用参数的分层默认值。
 
-## 快速开始
+## 架构
+
+主要模块都可以替换。项目特定逻辑应留在 adapter 内，不进入 `core/`。
+
+| 层 | 协议 | 默认实现 |
+|---|---|---|
+| `ModelBackend` | `async complete(...)` | `LiteLLMBackend` |
+| `KnowledgeProvider` | `retrieve/list_cases/add_case` | `YamlKnowledgeProvider` |
+| `ProjectAdapter` | `read_context/version/convention + reviewers/knowledge` | `UnityAdapter` / `GenericAdapter` |
+| `ReportRenderer` | `render(ReviewReport)` | Markdown / JSON / SARIF renderer |
+| `Stage` | `process(ctx) -> ctx` | retrieve、context、prompt、review、parse、normalize、consensus、score |
+
+后续增加 Rust、C++、Web 等项目类型时，通常只需要新增 adapter 包，不需要改 core pipeline。
+
+## Review Pipeline
+
+```text
+ReviewDocument
+  -> RetrieveStage
+  -> ContextStage
+  -> PromptStage
+  -> ReviewStage      # panel x dimensions fan-out
+  -> ParseStage
+  -> NormalizeStage   # canonical finding bucket
+  -> ConsensusStage
+  -> ScoreStage
+  -> ReviewReport
+```
+
+pipeline 用来降低“模型很自信但没有证据”的反馈：
+
+- finding 必须带 evidence quote。
+- 知识库检索可以注入项目踩坑和版本相关案例。
+- reviewer prompt 按角色拆分。
+- canonical normalize 减少不同模型之间的同义重复。
+- calibrated confidence 会结合模型共识、严重性、知识库命中和 Review Memory。
+
+## 知识库
+
+审查质量很依赖项目知识。框架随包带了一些 Unity ECS/Burst/FlowField/NetCode 通用种子案例，位置在 `design_review/adapters/unity/knowledge/`。但你项目自己的架构决策、历史 bug 和约定，建议放到项目本地知识库。
+
+推荐位置：
+
+```text
+<project-root>/.design-review/knowledge/*.yaml
+```
+
+示例：
+
+```yaml
+- id: MYSYSTEM-001
+  title: "Avoid structural changes inside hot ECS loops"
+  version: {entities: ">=1.4,<2.0"}
+  triggers: ["EntityCommandBuffer", "structural change", "hot loop"]
+  category: ecs_perf
+  bad_pattern: "Directly create or destroy entities inside a frequently running system update."
+  recommended_pattern: "Record changes into an ECB and play them back at a safe sync point."
+  source: "MEMORY.md#ecs-structural-changes"
+```
+
+建议：
+
+- 每条 case 只写一个具体、可复现的 gotcha。
+- `triggers` 写方案或代码里可能真实出现的词。
+- 敏感项目知识放本地并加入 gitignore。
+- 用 `list_knowledge` 查看当前加载了哪些框架和本地案例。
+
+## 安装
 
 ```bash
-cd Tools/design-review-mcp
+cd <path-to-design-review-mcp>
 uv sync --extra dev
-uv run design-review plan --text "# Plan" --output markdown
 ```
 
 运行测试：
@@ -32,7 +100,7 @@ uv run --extra dev ruff check .
 
 ## MCP 配置
 
-在 Codex 或 Claude Code 中注册 stdio server：
+在 Codex、Claude Code 或其它 MCP client 中注册 stdio server：
 
 ```jsonc
 {
@@ -41,38 +109,75 @@ uv run --extra dev ruff check .
   "args": [
     "run",
     "--directory",
-    "D:/Unity/My Project/Unity-ECS/My project/Tools/design-review-mcp",
+    "<path-to-design-review-mcp>",
     "design-review-mcp"
   ],
   "env": {
-    "UNITY_PROJECT_ROOT": "D:/Unity/My Project/Unity-ECS/My project",
-    "DESIGN_REVIEW_CONFIG": "D:/Unity/My Project/Unity-ECS/My project/Tools/design-review-mcp/design_review_config.json"
+    "UNITY_PROJECT_ROOT": "<path-to-unity-project>",
+    "DESIGN_REVIEW_CONFIG": "<path-to-design-review-mcp>/design_review_config.json"
   }
 }
 ```
 
-本地 API key 建议放在 `.env`。不要提交 `.env` 或 `design_review_config.json`。
+API key 建议放在 `.env` 或进程环境变量里。不要提交 `.env` 或本地 `design_review_config.json`。
+
+## CLI
+
+`design-review` CLI 和 MCP server 使用同一套 pipeline。
+
+```bash
+uv run design-review plan path/to/plan.md --output markdown
+cat plan.md | uv run design-review plan -
+uv run design-review plan --text "# Plan" --dimensions planner feasibility
+uv run design-review code src/a.py src/b.py --output sarif --output-file review.sarif
+uv run design-review doc docs/rfc.md --type rfc --output markdown
+```
+
+常用参数：
+
+- `--panel`：模型列表或 endpoint 快捷写法。
+- `--dimensions`：审查维度。
+- `--adapter`：`auto`、`generic` 或 `unity`。
+- `--retrieve-top-k`：检索知识库案例数量。
+- `--effort`：支持时传入 reasoning/thinking 强度。
+- `--max-cost-usd`：预估成本上限。
+- `--timeout`：单模型超时。
 
 ## 配置
 
-默认值优先级：
+默认值按以下顺序合并：
 
 ```text
 builtin < global config < project config < env < explicit tool args
 ```
 
-相关文档：
+详见：
 
 - [配置优先级](docs/config_precedence.zh-CN.md)
 - [Endpoint 配置](docs/endpoint_config.zh-CN.md)
 
-常用本地配置路径：
+常用本地配置位置：
 
 ```text
-Tools/design-review-mcp/design_review_config.json
+<path-to-design-review-mcp>/design_review_config.json
 ```
 
-同一个中转站如果同时提供 OpenAI 和 Anthropic 兼容接口，建议按协议拆成两个 endpoint：
+`design_review_config.json` 可以放这些默认值：
+
+- `panel`
+- `dimensions`
+- `retrieve_top_k`
+- `timeout`
+- `normalizer_model`
+- `effort`
+- `max_cost_usd`
+- `endpoints`
+- `privacy_policy`
+- `context_modes`
+
+## 自定义中转站 Endpoint
+
+`endpoints` 用来接入 New API、one-api、OpenRouter 风格代理或内部模型桥接等 OpenAI/Anthropic 兼容中转站。建议一个 endpoint 只对应一种协议。
 
 ```json
 {
@@ -81,7 +186,7 @@ Tools/design-review-mcp/design_review_config.json
       "provider": "openai",
       "base_url": "https://www.modelbridge.cloud/v1",
       "api_key_env": "MODEBRIDGE_API_KEY",
-      "models": ["gpt-5.5"]
+      "models": ["gpt-5.5", "gpt-5.4-mini"]
     },
     "modelbridge_anthropic": {
       "provider": "anthropic",
@@ -94,16 +199,59 @@ Tools/design-review-mcp/design_review_config.json
 }
 ```
 
-## MCP 工具
+Panel 快捷写法：
 
-- `ping`：健康检查。
-- `list_defaults`：查看合并后的默认值和来源。
-- `list_adapters`：查看可用 adapter 和自动识别结果。
-- `list_reviewers`：查看 reviewer 角色。
-- `review_plan`：审查方案或设计计划。
-- `review_code`：审查代码文件。
-- `review_document`：审查 markdown、code、ADR、RFC、config。
-- `mark_finding`：记录 finding 的采纳、拒绝或部分采纳结果。
+- `"endpoints"`：展开所有 endpoint 下声明的所有模型。
+- `"endpoint_id"`：展开某个 endpoint 下声明的所有模型。
+- `"endpoint_id/model"`：通过某个 endpoint 调用单个模型。
+- `"gpt-4o"`、`"deepseek/deepseek-chat"` 等原生 LiteLLM 字符串不走 endpoint 配置，直接走对应 provider 的环境变量。
+
+## 成本与 Effort 控制
+
+两个可选控制项：
+
+- `max_cost_usd`：单次 review 预估成本上限。工具会按 panel 顺序保留 job，直到估算成本超过上限。
+- `effort`：对支持的 provider 传入 reasoning/thinking 强度。不支持的 provider 会忽略。
+
+报告中会包含预算估算，以及 provider 返回的实际 usage/cost。
+
+## 隐私模式
+
+默认情况下，panel 中每个模型都会收到完整审查内容。对于敏感方案，可以用 `privacy_policy` 开启 strict 模式：可信模型看全文，对抗模型只看脱敏摘要，最后再由可信模型补充 evidence 评估。
+
+```json
+{
+  "privacy_policy": {
+    "policy": "strict",
+    "trusted": {"endpoint": "trusted_gateway", "model": "trusted-model", "label": "trusted"},
+    "min_coverage": 0.5
+  }
+}
+```
+
+strict privacy 更适合 plan review。code review 在脱敏后可能损失太多语义。
+
+## Review Memory
+
+用 `mark_finding` 标记 finding 是否有用：
+
+```text
+mark_finding(finding_id="gpt-4o-3", decision="accepted", params_hash="...")
+```
+
+合法 decision 是 `accepted`、`rejected`、`partial`。反馈会写入本地 SQLite review 数据库，并在后续按 `(model, dimension)` 校准模型可信度。
+
+## 输出
+
+报告包含：
+
+- `consensus`：所有模型都同意的 finding。
+- `majority`：多个模型支持的 finding。
+- `individual`：单模型 finding。
+- `failed_models`：隔离的模型失败。
+- `budget`、`usage`、`risk`、`context_compression` 等元信息。
+
+SARIF 输出可以上传到 GitHub Code Scanning，也可以被 IDE 消费。
 
 ## 项目结构
 
