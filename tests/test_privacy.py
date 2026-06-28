@@ -16,13 +16,13 @@ import json
 
 import pytest
 
-from design_review.core.document import ReviewDocument
-from design_review.core.report import Finding
-from design_review.core.stages.mediate import MediateStage
-from design_review.core.pipeline import PipelineContext
-from design_review.core.stages.score import _mediation_factor
-from design_review.privacy import OffPolicy, StrictPolicy, TransformResult, build_policy
-from design_review.providers.base import ModelResponse
+from brain_region.core.document import ReviewDocument
+from brain_region.core.report import Finding
+from brain_region.core.stages.mediate import MediateStage
+from brain_region.core.pipeline import PipelineContext
+from brain_region.core.stages.score import _mediation_factor
+from brain_region.privacy import OffPolicy, StrictPolicy, TransformResult, build_policy
+from brain_region.providers.base import ModelResponse
 
 
 _TRUSTED = {"label": "trusted", "model": "glm-5.2", "endpoint_id": "zhipu"}

@@ -1,4 +1,4 @@
-# Design Review Config Precedence
+# BrainRegion Config Precedence
 
 [English](config_precedence.md) | [简体中文](config_precedence.zh-CN.md)
 
@@ -22,21 +22,28 @@ Use global config for user or machine defaults that should survive project switc
 Global config lookup:
 
 ```text
-DESIGN_REVIEW_CONFIG, if set
+BRAIN_REGION_CONFIG, if set
+DESIGN_REVIEW_CONFIG, if set and BRAIN_REGION_CONFIG is not set
 $CODEX_HOME/design_review_config.json
+$CODEX_HOME/brain_region_config.json
 ~/.codex/design_review_config.json
+~/.codex/brain_region_config.json
 ~/.config/design-review/config.json
+~/.config/brain-region/config.json
 ```
 
 Project-local config is still supported through the historical project-root environment variable:
 
 ```text
 $UNITY_PROJECT_ROOT/Assets/Generated/AIGenerated/design_review_config.json
+$UNITY_PROJECT_ROOT/Assets/Generated/AIGenerated/brain_region_config.json
 ```
 
 For general projects, point `UNITY_PROJECT_ROOT` at the project root you want reviewed.
 Project config overrides global config. Dict values merge recursively, so project config can add one local endpoint,
 one `context_modes` entry, or one `model_reliability_prior.custom` entry without duplicating the whole global file.
 Lists and scalar values replace the lower layer.
+
+Legacy `design_review_config.json` paths are loaded for compatibility. Prefer the BrainRegion names for new setups.
 
 For endpoint protocol examples, see [endpoint_config.md](endpoint_config.md).

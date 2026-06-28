@@ -1,7 +1,7 @@
 """ParseStage：JSON 提取（鲁棒 fallback）+ normalize_finding（放宽校验 + evidence 强制）。"""
 from __future__ import annotations
 
-from design_review.core.stages.parse import extract_json_object, normalize_finding
+from brain_region.core.stages.parse import extract_json_object, normalize_finding
 
 _GOOD = {
     "dimension": "ecs_perf",
@@ -93,4 +93,3 @@ def test_extract_truncated_no_fence():
     t = '{"issues":[{"dimension":"x","title":"t","evidence_quote":"q"}'
     obj = extract_json_object(t)
     assert obj is not None and len(obj["issues"]) == 1
-

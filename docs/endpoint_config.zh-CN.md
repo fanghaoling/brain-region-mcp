@@ -2,7 +2,7 @@
 
 [English](endpoint_config.md) | [简体中文](endpoint_config.zh-CN.md)
 
-`design-review-mcp` 同时支持官方 LiteLLM 模型字符串和自定义中转站 endpoint。
+BrainRegion（`brain-region-mcp`）同时支持官方 LiteLLM 模型字符串和自定义中转站 endpoint。
 
 建议一个 endpoint 只对应一种网络协议。如果同一个中转站同时提供 OpenAI 兼容和 Anthropic 兼容 API，
 请拆成不同的 endpoint ID。

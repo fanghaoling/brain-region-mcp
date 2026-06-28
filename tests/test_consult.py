@@ -4,15 +4,15 @@ import json
 
 import pytest
 
-from design_review import reviews_db
-from design_review.core.consult import ConsultEngine, ConsultRequest
-from design_review.core.consult.guard import prepare_request
-from design_review.core.consult.parse import parse_advice
-from design_review.core.consult.prompt import render_consult_prompt
-from design_review.core.consult.report import ConsultAdvice, ConsultReport
-from design_review.core.consultants import CONSULTANTS_DIR
-from design_review.core.consultants.loader import load_consultant
-from design_review.providers.base import ModelResponse
+from brain_region import reviews_db
+from brain_region.core.consult import ConsultEngine, ConsultRequest
+from brain_region.core.consult.guard import prepare_request
+from brain_region.core.consult.parse import parse_advice
+from brain_region.core.consult.prompt import render_consult_prompt
+from brain_region.core.consult.report import ConsultAdvice, ConsultReport
+from brain_region.core.consultants import CONSULTANTS_DIR
+from brain_region.core.consultants.loader import load_consultant
+from brain_region.providers.base import ModelResponse
 
 
 class _ConsultBackend:
@@ -96,7 +96,7 @@ def test_prompt_includes_semantic_fields():
 
 
 def test_consult_mode_resolution():
-    from design_review.server import _resolve_consultants
+    from brain_region.server import _resolve_consultants
 
     defaults = {"consult_consultants": ["debugger", "critic"], "consult_mode": None}
     assert _resolve_consultants(None, "challenge", defaults) == (["challenge", "critic"], "challenge")
@@ -106,7 +106,7 @@ def test_consult_mode_resolution():
 
 @pytest.mark.asyncio
 async def test_consult_problem_routing_metadata(monkeypatch):
-    from design_review import server
+    from brain_region import server
 
     class _FakeEngine:
         async def consult(self, *args, **kwargs):
@@ -156,7 +156,7 @@ async def test_consult_problem_routing_metadata(monkeypatch):
 
 
 def test_record_consultation_and_mark_advice():
-    from design_review.server import mark_advice
+    from brain_region.server import mark_advice
 
     report = {
         "consultation_id": "consult-test",
@@ -201,7 +201,7 @@ def test_record_consultation_and_mark_advice():
 
 
 def test_mark_advice_rejects_missing_or_mismatched_advice():
-    from design_review.server import mark_advice
+    from brain_region.server import mark_advice
 
     with pytest.raises(ValueError, match="找不到 advice_id"):
         mark_advice(advice_id="missing-0", decision="accepted")
@@ -253,7 +253,7 @@ async def test_consult_engine_rejects_unknown_consultant():
 
 @pytest.mark.asyncio
 async def test_consult_engine_budget_trims_jobs(monkeypatch):
-    from design_review.core.stages import review as review_stage
+    from brain_region.core.stages import review as review_stage
 
     monkeypatch.setattr(review_stage, "_estimate_job_cost", lambda job: 0.02)
     backend = _ConsultBackend()

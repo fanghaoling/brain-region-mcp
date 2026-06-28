@@ -13,9 +13,9 @@ import json
 
 import pytest
 
-from design_review import reviews_db
-from design_review.providers.litellm import LiteLLMBackend
-from design_review.server import _normalize_one, _normalize_panel, _resolve_endpoints
+from brain_region import reviews_db
+from brain_region.providers.litellm import LiteLLMBackend
+from brain_region.server import _normalize_one, _normalize_panel, _resolve_endpoints
 
 
 # ===== _resolve_endpoints =====

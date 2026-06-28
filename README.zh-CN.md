@@ -1,8 +1,12 @@
-# design-review-mcp
+# 脑区 BrainRegion
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`design-review-mcp` 是一个用于对抗式设计审查的 MCP server 和 CLI。它会把方案、代码变更或文档分发给多个 LLM reviewer，结合项目知识库检索、finding 归一化和共识汇总，生成更容易落地处理的审查报告。
+BrainRegion 是面向 review、consultation、planning 和 memory 的 AI 协作基础设施。
+
+这个项目原名 `design-review-mcp`。内部 Python 包名已经迁移到 `brain_region`；重命名期间旧命令别名仍然保留，避免已有配置突然失效。
+
+当前 MCP server 和 CLI 可以把方案、代码变更或文档分发给多个 LLM reviewer，结合项目知识库检索、finding 归一化和共识汇总，生成更容易落地处理的审查报告。同时也支持外援会诊：当主模型卡住或需要第三方视角时，用 `consult_problem` 调用外部专家模型。
 
 核心 pipeline 保持项目无关，项目特定行为放在 adapter 中，因此默认形态适合通用的产品、架构、代码和文档设计审查。可选 adapter 可以在不改变 core pipeline 的前提下注入领域知识。
 
@@ -15,6 +19,7 @@
 - 将重复 finding 归一到 canonical bucket，并区分 consensus、majority、individual。
 - 支持 JSON、Markdown、SARIF 输出。
 - 支持 Review Memory：通过 `mark_finding` 记录 finding 是否采纳，后续用于校准模型可信度。
+- 支持外援会诊：通过 `consult_problem` 请求专家模型建议，并用 `mark_advice` 记录建议是否有用。
 - 支持 builtin、全局配置、项目配置、环境变量、显式调用参数的分层默认值。
 
 ## 架构
@@ -116,8 +121,10 @@ mark_advice(
 推荐位置：
 
 ```text
-<project-root>/.design-review/knowledge/*.yaml
+<project-root>/.brain-region/knowledge/*.yaml
 ```
+
+旧的 `.design-review/knowledge/` 目录仍会先加载以保持兼容。新的 `.brain-region/knowledge/` 会后加载，并可用相同 `id` 覆盖旧 case。
 
 示例：
 
@@ -142,7 +149,7 @@ mark_advice(
 ## 安装
 
 ```bash
-cd <path-to-design-review-mcp>
+cd <path-to-brain-region-mcp>
 uv sync --extra dev
 ```
 
@@ -164,29 +171,29 @@ uv run --extra dev ruff check .
   "args": [
     "run",
     "--directory",
-    "<path-to-design-review-mcp>",
-    "design-review-mcp"
+    "<path-to-brain-region-mcp>",
+    "brain-region-mcp"
   ],
   "env": {
     "UNITY_PROJECT_ROOT": "<path-to-project-root>",
-    "DESIGN_REVIEW_CONFIG": "<path-to-design-review-mcp>/design_review_config.json"
+    "BRAIN_REGION_CONFIG": "<path-to-brain-region-mcp>/brain_region_config.json"
   }
 }
 ```
 
 `UNITY_PROJECT_ROOT` 是为了兼容保留的项目根目录变量名，把它指向要审查的项目根目录即可。
-API key 建议放在 `.env` 或进程环境变量里。不要提交 `.env` 或本地 `design_review_config.json`。
+API key 建议放在 `.env` 或进程环境变量里。不要提交 `.env` 或本地 `brain_region_config.json`。
 
 ## CLI
 
-`design-review` CLI 和 MCP server 使用同一套 pipeline。
+`brain-region` CLI 和 MCP server 使用同一套 pipeline。重命名期间旧的 `design-review` 命令仍作为 alias 保留。
 
 ```bash
-uv run design-review plan path/to/plan.md --output markdown
-cat plan.md | uv run design-review plan -
-uv run design-review plan --text "# Plan" --dimensions planner feasibility
-uv run design-review code src/a.py src/b.py --output sarif --output-file review.sarif
-uv run design-review doc docs/rfc.md --type rfc --output markdown
+uv run brain-region plan path/to/plan.md --output markdown
+cat plan.md | uv run brain-region plan -
+uv run brain-region plan --text "# Plan" --dimensions planner feasibility
+uv run brain-region code src/a.py src/b.py --output sarif --output-file review.sarif
+uv run brain-region doc docs/rfc.md --type rfc --output markdown
 ```
 
 常用参数：
@@ -215,10 +222,10 @@ builtin < global config < project config < env < explicit tool args
 常用本地配置位置：
 
 ```text
-<path-to-design-review-mcp>/design_review_config.json
+<path-to-brain-region-mcp>/brain_region_config.json
 ```
 
-`design_review_config.json` 可以放这些默认值：
+`brain_region_config.json` 可以放这些默认值：
 
 - `panel`
 - `dimensions`
@@ -312,9 +319,9 @@ SARIF 输出可以上传到 GitHub Code Scanning，也可以被 IDE 消费。
 ## 项目结构
 
 ```text
-design_review/
+brain_region/
   server.py              # MCP server 入口
-  cli.py                 # design-review CLI
+  cli.py                 # brain-region CLI
   core/                  # pipeline、stage、schema、report model
   adapters/              # generic / 可选领域 adapter
   providers/             # LLM backend
@@ -327,9 +334,10 @@ docs/                    # 聚焦文档
 
 ## 安全说明
 
-- 不要提交 `.env`、`.env.local`、API key、生成数据库或本地 `design_review_config.json`。
+- 不要提交 `.env`、`.env.local`、API key、生成数据库或本地 `brain_region_config.json`。
+- 旧的 `design_review_config.json` 仍然兼容，但也不应提交。
 - 配置中优先使用 `api_key_env`，避免明文 `api_key`。
-- `design_reviews.db` 等生成的 review 数据库属于本地数据，测试不应依赖它。
+- `brain_region_reviews.db` 等生成的 review 数据库属于本地数据，测试不应依赖它。旧的 `design_reviews.db` 存在时仍会读取。
 
 ## License
 

@@ -10,10 +10,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ROOT = Path(__file__).resolve().parent.parent  # design-review-mcp/
+ROOT = Path(__file__).resolve().parent.parent  # brain-region-mcp/
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")  # 加载 .env（脚本直接跑时手动加载；MCP server 启动时 server.py 也会加载）
-UNITY_PROJECT = ROOT.parent.parent  # My project（design-review-mcp → Tools → My project）
+UNITY_PROJECT = ROOT.parent.parent  # My project（brain-region-mcp → Tools → My project）
 
 
 async def main() -> None:
@@ -22,13 +22,13 @@ async def main() -> None:
         print("ERROR: 未设 env:", missing)
         return
     os.environ["UNITY_PROJECT_ROOT"] = str(UNITY_PROJECT)  # 让 config/reviews_db 路径对
-    from design_review import defaults as defaults_mod
-    from design_review.adapters.unity import UnityAdapter
-    from design_review.core import ReviewDocument
-    from design_review.core.engine import ReviewEngine
-    from design_review.core.stages import build_default_pipeline
-    from design_review.knowledge import YamlKnowledgeProvider
-    from design_review.providers import LiteLLMBackend
+    from brain_region import defaults as defaults_mod
+    from brain_region.adapters.unity import UnityAdapter
+    from brain_region.core import ReviewDocument
+    from brain_region.core.engine import ReviewEngine
+    from brain_region.core.stages import build_default_pipeline
+    from brain_region.knowledge import YamlKnowledgeProvider
+    from brain_region.providers import LiteLLMBackend
 
     dd = defaults_mod.apply()
     a = UnityAdapter(str(UNITY_PROJECT))

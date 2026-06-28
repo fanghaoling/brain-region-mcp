@@ -11,12 +11,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from design_review.adapters.unity import UnityAdapter
-from design_review.core import ReviewDocument
-from design_review.core.engine import ReviewEngine
-from design_review.core.stages import build_default_pipeline
-from design_review.knowledge import YamlKnowledgeProvider
-from design_review.providers.base import ModelResponse
+from brain_region.adapters.unity import UnityAdapter
+from brain_region.core import ReviewDocument
+from brain_region.core.engine import ReviewEngine
+from brain_region.core.stages import build_default_pipeline
+from brain_region.knowledge import YamlKnowledgeProvider
+from brain_region.providers.base import ModelResponse
 
 
 class MockBackend:

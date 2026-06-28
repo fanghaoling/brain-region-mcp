@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import asyncio
 
-from design_review.core import ReviewDocument
-from design_review.core.pipeline import PipelineContext
-from design_review.core.report import CanonicalFinding, Finding
-from design_review.core.stages.consensus import ConsensusStage
-from design_review.providers import ModelResponse
+from brain_region.core import ReviewDocument
+from brain_region.core.pipeline import PipelineContext
+from brain_region.core.report import CanonicalFinding, Finding
+from brain_region.core.stages.consensus import ConsensusStage
+from brain_region.providers import ModelResponse
 
 
 def _cf(title: str, models: list[str]) -> CanonicalFinding:

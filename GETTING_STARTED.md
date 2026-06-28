@@ -1,13 +1,13 @@
-# 新手快速上手
+# 脑区 BrainRegion 新手快速上手
 
-面向首次配置 design-review-mcp 的用户 / AI。5 分钟跑通第一次审查。
+面向首次配置 `brain-region-mcp` 的用户 / AI。5 分钟跑通第一次审查。项目原名 `design-review-mcp`，旧命令仍可用，但新配置建议使用 BrainRegion 名称。
 
 > 完整功能（隐私模式 / 发散维度 / 成本控制 / Review Memory / 模型可信度先验）见 [README.md](README.md)。本篇只讲跑通 + 避坑。
 
 ## 1. 安装
 
 ```bash
-cd Tools/design-review-mcp
+cd Tools/brain-region-mcp
 uv sync
 ```
 
@@ -29,12 +29,13 @@ Windows：`setx OPENAI_API_KEY "sk-xxx"`。
 `~/.claude.json` 对应项目 `mcpServers` 加：
 
 ```jsonc
-"design-review": {
+"brain-region": {
   "type": "stdio",
   "command": "uv",
-  "args": ["run", "--directory", "<项目>/Tools/design-review-mcp", "design-review-mcp"],
+  "args": ["run", "--directory", "<项目>/Tools/brain-region-mcp", "brain-region-mcp"],
   "env": {
     "UNITY_PROJECT_ROOT": "<项目>",
+    "BRAIN_REGION_CONFIG": "<项目>/Tools/brain-region-mcp/brain_region_config.json",
     "OPENAI_API_KEY": "...",
     "ANTHROPIC_API_KEY": "..."
   }
@@ -92,7 +93,7 @@ mark_advice(
 用中转站（智谱 Anthropic 兼容端点、小米 MiMo、New API、one-api 等）省官方 key 的钱，或接入官方没覆盖的模型：
 
 ```jsonc
-// design_review_config.json
+// brain_region_config.json
 {
   "endpoints": {
     "zhipu": {"provider":"anthropic", "base_url":"https://open.bigmodel.cn/api/anthropic",

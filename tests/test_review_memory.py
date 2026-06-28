@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from design_review import reviews_db
-from design_review.core.pipeline import PipelineContext
-from design_review.core.report import CanonicalFinding, Finding
-from design_review.core.stages.dedup import DedupStage
-from design_review.core.stages.parse import ParseStage
-from design_review.core.stages.score import _calibrate, _reliability_factor
-from design_review.providers.base import ModelResponse
+from brain_region import reviews_db
+from brain_region.core.pipeline import PipelineContext
+from brain_region.core.report import CanonicalFinding, Finding
+from brain_region.core.stages.dedup import DedupStage
+from brain_region.core.stages.parse import ParseStage
+from brain_region.core.stages.score import _calibrate, _reliability_factor
+from brain_region.providers.base import ModelResponse
 
 
 @pytest.fixture
@@ -25,6 +25,26 @@ def isolated_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNITY_PROJECT_ROOT", str(tmp_path))
     reviews_db._connect()  # 触发建表（reviews + finding_feedback）
     return tmp_path
+
+
+def test_db_path_uses_brain_region_name_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNITY_PROJECT_ROOT", str(tmp_path))
+
+    got = reviews_db._db_path()
+
+    assert got.name == "brain_region_reviews.db"
+
+
+def test_db_path_keeps_legacy_database_when_it_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNITY_PROJECT_ROOT", str(tmp_path))
+    generated = tmp_path / "Assets" / "Generated" / "AIGenerated"
+    generated.mkdir(parents=True)
+    legacy = generated / "design_reviews.db"
+    legacy.write_bytes(b"")
+
+    got = reviews_db._db_path()
+
+    assert got == legacy
 
 
 class _MockAdapter:
@@ -202,7 +222,7 @@ def test_dedup_higher_conf_replaces_inherits_old_id():
 
 def test_rebuild_report_fills_missing_id():
     """旧缓存 finding 无 id → _rebuild_report 就地补填 f"{model}-{idx}"。"""
-    from design_review.server import _rebuild_report
+    from brain_region.server import _rebuild_report
     old = {
         "document_type": "markdown", "adapter": "unity", "project_version": {},
         "panel": ["gpt-4o"], "failed_models": [], "retrieved_cases": [],
@@ -222,7 +242,7 @@ def test_rebuild_report_fills_missing_id():
 # ===== mark_finding 反查 =====
 
 def test_mark_finding_with_params_hash(isolated_db):
-    from design_review.server import mark_finding
+    from brain_region.server import mark_finding
     report = {
         "document_type": "markdown", "adapter": "unity", "project_version": {},
         "panel": ["gpt-4o"], "failed_models": [], "retrieved_cases": [],
@@ -243,7 +263,7 @@ def test_mark_finding_with_params_hash(isolated_db):
 
 def test_mark_finding_finds_via_deduped_ids(isolated_db):
     """断链点 A 反查：finding 在 deduped_ids 里（被去重）也能 mark。"""
-    from design_review.server import mark_finding
+    from brain_region.server import mark_finding
     report = {
         "document_type": "markdown", "adapter": "unity", "project_version": {},
         "panel": ["glm"], "failed_models": [], "retrieved_cases": [],
@@ -264,7 +284,7 @@ def test_mark_finding_finds_via_deduped_ids(isolated_db):
 
 
 def test_mark_finding_invalid_inputs(isolated_db):
-    from design_review.server import mark_finding
+    from brain_region.server import mark_finding
     with pytest.raises(ValueError):
         mark_finding(finding_id="no-seq-here", decision="accepted")  # 格式错（无 -数字 结尾）
     with pytest.raises(ValueError):
@@ -272,7 +292,7 @@ def test_mark_finding_invalid_inputs(isolated_db):
 
 
 def test_mark_finding_not_found(isolated_db):
-    from design_review.server import mark_finding
+    from brain_region.server import mark_finding
     with pytest.raises(ValueError):
         mark_finding(finding_id="gpt-4o-0", decision="accepted")  # 无 review 含此 id，未传 params_hash
 
@@ -348,7 +368,7 @@ def test_record_overwrites_stale_row(isolated_db):
 def test_mark_finding_consecutive_marks_no_break(isolated_db):
     """连续标同 review 多条 finding（默认 invalidate=True）不断链。
     原 bug：第 1 条 DELETE report → 第 2 条 lookup_report=None → raise ValueError。"""
-    from design_review.server import mark_finding
+    from brain_region.server import mark_finding
     report = {
         "document_type": "markdown", "adapter": "unity", "project_version": {},
         "panel": ["gpt-4o"], "failed_models": [], "retrieved_cases": [],

@@ -1,10 +1,15 @@
-# design-review-mcp
+# 脑区 BrainRegion
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-`design-review-mcp` is an MCP server and CLI for adversarial design review. It fans out a plan, source change, or
-document to multiple LLM reviewer roles, retrieves project-specific knowledge, normalizes duplicate findings, and returns
-consensus-oriented reports that are easier to act on.
+BrainRegion is AI collaboration infrastructure for review, consultation, planning, and memory.
+
+This project was formerly `design-review-mcp`. The internal Python package has moved to `brain_region`, while the old
+CLI command aliases remain available during the rename.
+
+The current MCP server and CLI can fan out a plan, source change, or document to multiple LLM reviewer roles, retrieve
+project-specific knowledge, normalize duplicate findings, and return consensus-oriented reports that are easier to act
+on. It also includes external consultation tools for asking another expert model when the main assistant is stuck.
 
 The core pipeline is project-agnostic. Project-specific behavior lives in adapters, so the default experience stays
 useful for general product, architecture, code, and document design reviews. Optional adapters can add domain knowledge
@@ -19,6 +24,7 @@ without changing the core pipeline.
 - Normalize findings into canonical buckets and separate consensus, majority, and individual issues.
 - Render JSON, Markdown, and SARIF output.
 - Track review memory with `mark_finding` so accepted/rejected findings can influence later confidence calibration.
+- Ask external consultant models with `consult_problem` and record useful advice with `mark_advice`.
 - Merge defaults from builtin values, global config, project config, environment variables, and explicit call arguments.
 
 ## Architecture
@@ -122,8 +128,11 @@ architecture decisions, historical bugs, and team conventions usually live in pr
 Recommended project-local location:
 
 ```text
-<project-root>/.design-review/knowledge/*.yaml
+<project-root>/.brain-region/knowledge/*.yaml
 ```
+
+The legacy `.design-review/knowledge/` directory is still loaded first for compatibility. New `.brain-region/knowledge/`
+cases load after it and can override legacy cases with the same `id`.
 
 Example:
 
@@ -148,7 +157,7 @@ Tips:
 ## Installation
 
 ```bash
-cd <path-to-design-review-mcp>
+cd <path-to-brain-region-mcp>
 uv sync --extra dev
 ```
 
@@ -170,29 +179,30 @@ Register the stdio server in Codex, Claude Code, or another MCP client:
   "args": [
     "run",
     "--directory",
-    "<path-to-design-review-mcp>",
-    "design-review-mcp"
+    "<path-to-brain-region-mcp>",
+    "brain-region-mcp"
   ],
   "env": {
     "UNITY_PROJECT_ROOT": "<path-to-project-root>",
-    "DESIGN_REVIEW_CONFIG": "<path-to-design-review-mcp>/design_review_config.json"
+    "BRAIN_REGION_CONFIG": "<path-to-brain-region-mcp>/brain_region_config.json"
   }
 }
 ```
 
 `UNITY_PROJECT_ROOT` is a historical project-root environment variable name. Point it at the project you want reviewed.
-Keep API keys in `.env` or process environment variables. Do not commit `.env` or local `design_review_config.json`.
+Keep API keys in `.env` or process environment variables. Do not commit `.env` or local `brain_region_config.json`.
 
 ## CLI
 
-The `design-review` CLI uses the same pipeline as the MCP server.
+The `brain-region` CLI uses the same pipeline as the MCP server. The legacy `design-review` command is still available
+as an alias during the rename.
 
 ```bash
-uv run design-review plan path/to/plan.md --output markdown
-cat plan.md | uv run design-review plan -
-uv run design-review plan --text "# Plan" --dimensions planner feasibility
-uv run design-review code src/a.py src/b.py --output sarif --output-file review.sarif
-uv run design-review doc docs/rfc.md --type rfc --output markdown
+uv run brain-region plan path/to/plan.md --output markdown
+cat plan.md | uv run brain-region plan -
+uv run brain-region plan --text "# Plan" --dimensions planner feasibility
+uv run brain-region code src/a.py src/b.py --output sarif --output-file review.sarif
+uv run brain-region doc docs/rfc.md --type rfc --output markdown
 ```
 
 Common options:
@@ -221,10 +231,10 @@ See:
 Typical local config path:
 
 ```text
-<path-to-design-review-mcp>/design_review_config.json
+<path-to-brain-region-mcp>/brain_region_config.json
 ```
 
-`design_review_config.json` can hold defaults such as:
+`brain_region_config.json` can hold defaults such as:
 
 - `panel`
 - `dimensions`
@@ -322,9 +332,9 @@ SARIF output can be uploaded to GitHub Code Scanning or consumed by IDEs.
 ## Project Layout
 
 ```text
-design_review/
+brain_region/
   server.py              # MCP server entry point
-  cli.py                 # design-review CLI
+  cli.py                 # brain-region CLI
   core/                  # pipeline, stages, schemas, report models
   adapters/              # generic and optional domain adapters
   providers/             # LLM backends
@@ -337,9 +347,11 @@ docs/                    # focused docs
 
 ## Security Notes
 
-- Do not commit `.env`, `.env.local`, API keys, generated databases, or local `design_review_config.json` files.
+- Do not commit `.env`, `.env.local`, API keys, generated databases, or local `brain_region_config.json` files.
+- Legacy `design_review_config.json` files are still supported but should not be committed either.
 - Prefer `api_key_env` over plaintext `api_key`.
-- Generated review databases such as `design_reviews.db` are local data and should not be used in tests.
+- Generated review databases such as `brain_region_reviews.db` are local data and should not be used in tests. Legacy
+  `design_reviews.db` files are still read when present.
 
 ## License
 

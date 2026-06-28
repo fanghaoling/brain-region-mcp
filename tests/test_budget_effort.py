@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 
-from design_review.core import ReviewDocument
-from design_review.core.pipeline import PipelineContext
-from design_review.core.stages.review import ReviewStage, select_jobs_within_budget
-from design_review.providers.base import ModelResponse
+from brain_region.core import ReviewDocument
+from brain_region.core.pipeline import PipelineContext
+from brain_region.core.stages.review import ReviewStage, select_jobs_within_budget
+from brain_region.providers.base import ModelResponse
 
 
 def _job(model: str, dim: str = "ecs_perf") -> dict:
@@ -31,7 +31,7 @@ class _FakeBackend:
 # ===== provider 映射 =====
 
 def test_effort_kwargs_mapping():
-    from design_review.providers.litellm import _effort_kwargs
+    from brain_region.providers.litellm import _effort_kwargs
 
     # Claude: output_config + adaptive thinking
     assert _effort_kwargs("claude-opus-4-8", "high") == {
@@ -53,7 +53,7 @@ def test_effort_kwargs_mapping():
 
 def test_budget_trim_keeps_prefix(monkeypatch):
     """max_cost_usd 限住：按 panel 顺序保留前缀，超的裁掉，exhausted=True。"""
-    from design_review.core.stages import review as rev
+    from brain_region.core.stages import review as rev
 
     costs = iter([0.05, 0.05, 0.05, 0.05])
     monkeypatch.setattr(rev, "_estimate_job_cost", lambda job: next(costs))
@@ -66,7 +66,7 @@ def test_budget_trim_keeps_prefix(monkeypatch):
 
 def test_budget_trim_all_fit(monkeypatch):
     """预算够 = 全跑，exhausted=False。"""
-    from design_review.core.stages import review as rev
+    from brain_region.core.stages import review as rev
 
     monkeypatch.setattr(rev, "_estimate_job_cost", lambda job: 0.01)
     jobs = [_job("a"), _job("b"), _job("c")]
@@ -89,7 +89,7 @@ def test_effort_passthrough_to_backend():
 
 
 def test_budget_runs_subset(monkeypatch):
-    from design_review.core.stages import review as rev
+    from brain_region.core.stages import review as rev
 
     monkeypatch.setattr(rev, "_estimate_job_cost", lambda job: 0.05)
     backend = _FakeBackend()

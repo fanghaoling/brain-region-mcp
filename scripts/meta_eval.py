@@ -19,18 +19,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-UNITY_PROJECT = ROOT.parent.parent  # ROOT=Tools/design-review-mcp → 上两级 = 游戏项目根
+UNITY_PROJECT = ROOT.parent.parent  # ROOT=Tools/brain-region-mcp → 上两级 = 游戏项目根
 
-from design_review.adapters.unity import UnityAdapter
-from design_review.core import ReviewDocument
-from design_review.core.engine import ReviewEngine
-from design_review.core.stages import build_default_pipeline
-from design_review.knowledge import YamlKnowledgeProvider
-from design_review.providers import LiteLLMBackend
+from brain_region.adapters.unity import UnityAdapter
+from brain_region.core import ReviewDocument
+from brain_region.core.engine import ReviewEngine
+from brain_region.core.stages import build_default_pipeline
+from brain_region.knowledge import YamlKnowledgeProvider
+from brain_region.providers import LiteLLMBackend
 
 # 每条种子案例的"含 bug 方案"探针（人工构造，模拟真实会写出的错误代码/方案）。
 # 这些探针对应 framework 随包的【通用】案例。项目特定案例（自家网络同步设计等）在本地
-# <项目>/.design-review/knowledge/，不在公开库——用本项目做 meta-eval 时另起本地脚本追加。
+# <项目>/.brain-region/knowledge/，不在公开库——用本项目做 meta-eval 时另起本地脚本追加。
 PROBES = {
     "ECS-BURST-001": "在 ISystem.OnUpdate 里调 [BurstCompile] static void Foo(MyStruct s) 按值传 struct。",
     "ECS-BURST-002": "在 [BurstCompile] 方法里读 static bool Enable 这个运行时开关字段决定是否执行。",
@@ -47,8 +47,7 @@ PROBES = {
 async def main() -> None:
     a = UnityAdapter(str(UNITY_PROJECT))
     dirs = [a.knowledge_dir()]
-    if a.local_knowledge_dir().exists():
-        dirs.append(a.local_knowledge_dir())
+    dirs.extend(path for path in a.local_knowledge_dirs() if path.exists())
     kp = YamlKnowledgeProvider(dirs)
     eng = ReviewEngine(
         adapter=a, backend=LiteLLMBackend(), knowledge=kp,

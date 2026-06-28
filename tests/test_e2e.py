@@ -10,15 +10,15 @@ import re
 from pathlib import Path
 
 
-from design_review.adapters.unity import UnityAdapter
-from design_review.core import ReviewDocument
-from design_review.core.engine import ReviewEngine
-from design_review.core.stages import build_default_pipeline
-from design_review.knowledge import YamlKnowledgeProvider
-from design_review.providers.base import ModelResponse
+from brain_region.adapters.unity import UnityAdapter
+from brain_region.core import ReviewDocument
+from brain_region.core.engine import ReviewEngine
+from brain_region.core.stages import build_default_pipeline
+from brain_region.knowledge import YamlKnowledgeProvider
+from brain_region.providers.base import ModelResponse
 
 # 真项目根（读真 manifest + 用包内 knowledge 种子）
-# tests/test_e2e.py → parents: [tests, design-review-mcp, Tools, My project]
+# tests/test_e2e.py → parents: [tests, brain-region-mcp, Tools, My project]
 UNITY_PROJECT = Path(__file__).resolve().parents[3]
 
 
