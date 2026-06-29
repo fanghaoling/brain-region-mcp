@@ -113,3 +113,23 @@ def test_no_budget_runs_all():
     asyncio.run(ReviewStage().process(ctx))
     assert len(backend.calls) == 3
     assert ctx.jobs_run == 3 and ctx.budget_exhausted is False
+
+
+# ===== 单价表（ISS-003：旗舰模型必须有价，否则名义单价让预算护栏严重低估）=====
+
+def test_estimate_job_cost_uses_real_price_for_flagship():
+    from brain_region.core.stages.review import _estimate_job_cost, _NOMINAL_COST_USD
+
+    # gpt-5.5 在价表里 → 用真实单价，远高于名义单价（防 ISS-003 的 ~21× 低估）
+    cost = _estimate_job_cost(_job("gpt-5.5"))
+    assert cost > _NOMINAL_COST_USD * 5
+    # 端点前缀形式 modelbridge_openai/gpt-5.5 也能解析到同一单价
+    prefixed = {**_job("modelbridge_openai/gpt-5.5"), "model": "modelbridge_openai/gpt-5.5"}
+    assert _estimate_job_cost(prefixed) == cost
+
+
+def test_estimate_job_cost_nominal_for_unknown_cheap_model():
+    from brain_region.core.stages.review import _estimate_job_cost, _NOMINAL_COST_USD
+
+    # glm 等不在价表的便宜模型 → 名义单价（保守，略高于实际）
+    assert _estimate_job_cost(_job("zai/glm-5.2")) == _NOMINAL_COST_USD

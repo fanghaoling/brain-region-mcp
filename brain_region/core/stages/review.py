@@ -29,8 +29,11 @@ _PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
     "gpt-4o": (2.5, 10.0),
     "gpt-5": (5.0, 15.0),
+    "gpt-5.5": (5.0, 15.0),  # gpt-5 系列 anchor（ISS-003：缺失曾致估算比实际低 ~21×）
 }
-# 不在价表里的模型名义单价 USD/job（glm/deepseek 等很便宜，保守估值）
+# 不在价表里的模型名义单价 USD/job（glm/deepseek 等很便宜，保守估值）。
+# 注意：未知【旗舰】模型也会落到这里 → 严重低估 → 预算护栏失效（ISS-003/ISS-001）。
+# 故新接入的贵模型必须显式加进上面的价表，别依赖名义单价。
 _NOMINAL_COST_USD = 0.004
 
 
