@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from .consult.guard import prepare_request, redact_text
+from .consult.guard import prepare_request, summarize_unparseable_output
 from .consult.report import ConsultRequest
 from .errors import classify_error
 from .stages.parse import extract_json_object
@@ -276,22 +276,6 @@ def _extract_plan_object(content: str) -> dict | None:
     return None
 
 
-def summarize_unparseable_plan_output(content: str, *, max_excerpt: int = 700) -> dict:
-    """Return a small, redacted diagnostic payload for planner parse failures."""
-    raw = content or ""
-    redacted, redacted_items = redact_text(raw)
-    excerpt = " ".join(redacted.split())
-    return {
-        "content_chars": len(raw),
-        "excerpt_chars": min(len(excerpt), max_excerpt),
-        "output_excerpt": excerpt[:max_excerpt],
-        "redacted_items": redacted_items,
-        "fenced_blocks": len(_FENCED_BLOCK_RE.findall(raw)),
-        "has_object_start": "{" in raw,
-        "has_array_start": "[" in raw,
-    }
-
-
 def _to_consult_request(request: PlanRequest) -> ConsultRequest:
     constraints = list(request.constraints or [])
     for item in request.success_criteria or []:
@@ -476,7 +460,7 @@ class PlannerEngine:
                         "error": "Planner output could not be parsed as a plan JSON object",
                         "type": "parse_error",
                         "hint": "Lower temperature, simplify the planning prompt, or ask the model to return one JSON object.",
-                        "diagnostics": summarize_unparseable_plan_output(resp.content),
+                        "diagnostics": summarize_unparseable_output(resp.content),
                     }
                 )
                 continue

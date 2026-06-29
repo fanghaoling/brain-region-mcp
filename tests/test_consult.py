@@ -270,3 +270,50 @@ async def test_consult_engine_budget_trims_jobs(monkeypatch):
     assert report.budget["jobs_total"] == 2
     assert report.budget["jobs_run"] == 1
     assert report.budget["exhausted"] is True
+
+
+class _RawBackend:
+    """Returns fixed raw content (no valid JSON object) to exercise parse_error."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    async def complete(self, *, model, system, user, temperature=0.3, top_p=0.95,
+                       max_tokens=4096, effort=None, endpoint_id=None):
+        return ModelResponse(model=model, content=self.content, usage={"total_tokens": 5})
+
+
+@pytest.mark.asyncio
+async def test_consult_parse_error_no_json_object_redacted():
+    # ISS-007：reasoning 模型耗尽 max_tokens、整段没吐 `{` 的 parse_error。
+    backend = _RawBackend("思考后认为问题在 api_key=sk-secret1234567890")
+    engine = ConsultEngine(backend=backend, consultants_dir=CONSULTANTS_DIR)
+    report = await engine.consult(
+        ConsultRequest(problem="stuck"),
+        panel=[_panel("reasoning-model")],
+        consultants=["challenge"],
+        max_cost_usd=None,
+    )
+    failed = report.to_dict()["failed_models"][0]
+    assert failed["type"] == "parse_error"
+    assert failed["diagnostics"]["has_object_start"] is False
+    assert "max_tokens" in failed["hint"]
+    assert "sk-secret" not in failed["diagnostics"]["output_excerpt"]
+    assert "[REDACTED]" in failed["diagnostics"]["output_excerpt"]
+
+
+@pytest.mark.asyncio
+async def test_consult_parse_error_malformed_object_hint():
+    # 含 `{` 但无法修复 → has_object_start=True 分支。
+    backend = _RawBackend("{not valid json")
+    engine = ConsultEngine(backend=backend, consultants_dir=CONSULTANTS_DIR)
+    report = await engine.consult(
+        ConsultRequest(problem="stuck"),
+        panel=[_panel("trunc-model")],
+        consultants=["debugger"],
+        max_cost_usd=None,
+    )
+    failed = report.to_dict()["failed_models"][0]
+    assert failed["type"] == "parse_error"
+    assert failed["diagnostics"]["has_object_start"] is True
+    assert "解析失败" in failed["hint"]

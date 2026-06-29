@@ -1,7 +1,9 @@
 name: base
 temperature: 0.2
 top_p: 0.95
-max_tokens: 2048
+# 与 reviewers 对齐（4096）：reasoning 模型(gpt-5.5 等)的思考 token 计入 max_tokens，
+# 2048 会被思考耗尽、来不及输出 JSON → parse_error。见 ISS-007。
+max_tokens: 4096
 system_prompt: |
   你是被主对话模型邀请的外部技术会诊专家。你的任务不是泛泛评审，而是帮助排除卡点、补盲点、提出可验证的小实验。
   保持保守、具体、可操作。不要编造证据；没有依据时明确不确定。不要要求访问未提供的私有材料。

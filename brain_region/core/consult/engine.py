@@ -8,7 +8,7 @@ from typing import Any
 
 from ..errors import classify_error
 from ..stages.review import select_jobs_within_budget
-from .guard import prepare_request
+from .guard import prepare_request, summarize_unparseable_output
 from .parse import parse_advice
 from .prompt import render_consult_prompt
 from .report import ConsultReport, ConsultRequest
@@ -137,13 +137,22 @@ class ConsultEngine:
                 advice_id=f"{consultation_id}-{advice_index}",
             )
             if parsed is None:
+                diagnostics = summarize_unparseable_output(resp.content)
+                if diagnostics.get("has_object_start"):
+                    hint = "输出含 JSON 但解析失败（可能被截断）；提高 max_tokens 或降低 effort 后重试。"
+                else:
+                    hint = (
+                        "模型未输出 JSON 对象（可能 reasoning 思考耗尽 max_tokens 或未遵循格式）；"
+                        "提高 max_tokens、降低 effort、或换非 reasoning 模型。"
+                    )
                 failed_models.append(
                     {
                         "model": label,
                         "consultant": consultant,
                         "error": "输出无法解析为 consult JSON",
                         "type": "parse_error",
-                        "hint": "检查 consultant prompt 或降低 temperature",
+                        "hint": hint,
+                        "diagnostics": diagnostics,
                     }
                 )
             else:

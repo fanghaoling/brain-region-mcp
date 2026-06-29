@@ -43,6 +43,33 @@ def redact_text(text: str) -> tuple[str, int]:
     return _redact(text)
 
 
+_DIAG_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+
+
+def summarize_unparseable_output(content: str, *, max_excerpt: int = 700) -> dict:
+    """Return a small, redacted diagnostic payload for parse failures.
+
+    Shared by consult/planner engines when a model returns output that cannot be
+    parsed as the expected JSON object. ``has_object_start`` tells whether the
+    model emitted any ``{`` at all: False points at reasoning-token starvation
+    (max_tokens too low for a thinking model) or a format miss, rather than a
+    truncation mid-object. Excerpts are redacted so failed_models never leaks
+    secrets that may have been echoed back from the prompt.
+    """
+    raw = content or ""
+    redacted, redacted_items = redact_text(raw)
+    excerpt = " ".join(redacted.split())
+    return {
+        "content_chars": len(raw),
+        "excerpt_chars": min(len(excerpt), max_excerpt),
+        "output_excerpt": excerpt[:max_excerpt],
+        "redacted_items": redacted_items,
+        "fenced_blocks": len(_DIAG_FENCE_RE.findall(raw)),
+        "has_object_start": "{" in raw,
+        "has_array_start": "[" in raw,
+    }
+
+
 def _take(text: str, *, field: str, remaining: int, meta: dict) -> tuple[str, int]:
     if remaining <= 0:
         if text:
