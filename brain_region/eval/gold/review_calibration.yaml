@@ -1,0 +1,117 @@
+# judge 校准 gold（seed：Claude 标注的 MVP）。
+# 每对：同一任务的两份 review——good（高质量）/ bad（特定失效模式）。盲评 judge 应让 good > bad。
+# ⚠️ 权威性 = 标注者的标准。要符合你的真实 review 标准，直接改这里的 good/bad/task/note。
+# failure_mode: missing_critical | harmful_advice | vague_no_evidence | irrelevant_noise | redundant
+
+# ===== missing_critical：bad 漏掉关键问题 =====
+- id: cal-001
+  failure_mode: missing_critical
+  task: |
+    审查登录接口：密码明文写日志，且 SQL 用字符串拼接用户输入。
+  good:
+    - {severity: high, title: "密码明文入日志", evidence: "login.py:42 logger.info(f'login {password}')", suggestion: "绝不能记明文密码；只记脱敏标识或不记。"}
+    - {severity: high, title: "SQL 拼接致注入", evidence: "login.py:50 f\"SELECT * WHERE name='{name}'\"", suggestion: "参数化查询/ORM。"}
+  bad:
+    - {severity: low, title: "建议加注释", evidence: "无", suggestion: "函数加点注释更清晰。"}
+  note: bad 漏掉明文日志 + 注入两个 critical，只提无关紧要的注释。
+
+- id: cal-002
+  failure_mode: missing_critical
+  task: |
+    审查文件上传：直接用用户文件名存盘，无大小/类型校验。
+  good:
+    - {severity: high, title: "路径穿越", evidence: "upload.py:30 save(name)，name 未过滤", suggestion: "校验/重命名文件名，限白名单目录。"}
+    - {severity: high, title: "无大小/类型限制", evidence: "upload.py 无 size/type 检查", suggestion: "限制大小与 MIME 白名单。"}
+  bad:
+    - {severity: low, title: "变量命名风格", evidence: "无", suggestion: "name 改成 fileName 更规范。"}
+  note: bad 漏掉穿越 + 无校验，只挑命名。
+
+# ===== harmful_advice：bad 给出错误/危险建议 =====
+- id: cal-003
+  failure_mode: harmful_advice
+  task: |
+    审查：API_KEY 明文写进 config.yaml 提交进仓库。
+  good:
+    - {severity: high, title: "密钥明文入库", evidence: "config.yaml:5 API_KEY=sk-...", suggestion: "走环境变量/secret manager，不入库；轮换已泄露的 key。"}
+  bad:
+    - {severity: high, title: "保持现状即可", evidence: "无", suggestion: "明文入库方便部署，没问题，直接提交。"}
+  note: bad 建议继续明文提交密钥——有害。
+
+- id: cal-004
+  failure_mode: harmful_advice
+  task: |
+    审查：生产异常处理把完整异常栈返回给客户端。
+  good:
+    - {severity: high, title: "泄露内部信息", evidence: "handler.py:20 return str(e) 给客户端", suggestion: "生产返通用错误信息，栈只记服务端日志。"}
+  bad:
+    - {severity: medium, title: "便于调试", evidence: "无", suggestion: "生产环境也把完整异常返给前端，方便排查。"}
+  note: bad 建议生产环境暴露异常栈——有害。
+
+# ===== vague_no_evidence：bad 无证据、空泛 =====
+- id: cal-005
+  failure_mode: vague_no_evidence
+  task: |
+    审查列表接口：循环内对每条记录单独查 DB（N+1）。
+  good:
+    - {severity: medium, title: "N+1 查询", evidence: "list.py:15 for r in rows: db.get(r.tag)", suggestion: "批量预取 tag→entity 映射，一次查询。"}
+  bad:
+    - {severity: low, title: "性能可能更好", evidence: "无", suggestion: "这块性能感觉可以优化一下，考虑改改。"}
+  note: bad 无证据、空泛，没指出 N+1。
+
+- id: cal-006
+  failure_mode: vague_no_evidence
+  task: |
+    审查：注册接口未校验邮箱格式与密码强度。
+  good:
+    - {severity: medium, title: "缺输入校验", evidence: "register.py:10 直接用 email/password 入库", suggestion: "校验邮箱格式 + 密码最小强度，失败返 400。"}
+  bad:
+    - {severity: low, title: "加点验证", evidence: "无", suggestion: "也许该加些输入验证吧。"}
+  note: bad 无证据、空泛，没说校验什么/在哪。
+
+# ===== irrelevant_noise：bad 跑题，忽略真问题 =====
+- id: cal-007
+  failure_mode: irrelevant_noise
+  task: |
+    审查搜索接口：用户输入直接拼进 LIKE 查询。
+  good:
+    - {severity: high, title: "SQL 注入", evidence: "search.py:12 f\"LIKE '%{q}'\"", suggestion: "参数化绑定，转义通配符。"}
+  bad:
+    - {severity: low, title: "变量命名", evidence: "无", suggestion: "q 改成 query 更清晰。"}
+    - {severity: low, title: "缺注释", evidence: "无", suggestion: "函数加 docstring。"}
+  note: bad 全是命名/注释噪声，完全忽略注入。
+
+- id: cal-008
+  failure_mode: irrelevant_noise
+  task: |
+    审查扣款逻辑：先查余额、再扣，两步未加锁。
+  good:
+    - {severity: high, title: "TOCTOU 竞态", evidence: "pay.py:20 balance=get(); pay.py:22 if balance>x: deduct()", suggestion: "用事务/行锁或原子 update where balance>=x。"}
+  bad:
+    - {severity: low, title: "格式化", evidence: "无", suggestion: "代码缩进可以再整齐点。"}
+  note: bad 挑格式，忽略竞态这个真问题。
+
+# ===== redundant：bad 把同一个问题反复说 =====
+- id: cal-009
+  failure_mode: redundant
+  task: |
+    审查：管理员接口未做权限校验。
+  good:
+    - {severity: high, title: "缺权限校验", evidence: "admin.py:30 路由无 @require_admin", suggestion: "加权限中间件/装饰器，未授权返 403。"}
+  bad:
+    - {severity: high, title: "缺权限校验", evidence: "无", suggestion: "应该加权限校验。"}
+    - {severity: high, title: "没检查权限", evidence: "无", suggestion: "需要检查权限。"}
+    - {severity: high, title: "权限缺失", evidence: "无", suggestion: "记得加权限。"}
+    - {severity: high, title: "鉴权问题", evidence: "无", suggestion: "加上鉴权。"}
+  note: bad 把"缺权限"换了 4 种说法重复，无增量。
+
+- id: cal-010
+  failure_mode: redundant
+  task: |
+    审查：循环里 new 临时 list，热路径分配。
+  good:
+    - {severity: medium, title: "热路径分配", evidence: "loop.py:8 while True: buf=[]", suggestion: "buf 提到循环外复用，减少 GC 压力。"}
+  bad:
+    - {severity: medium, title: "循环内分配", evidence: "无", suggestion: "把分配移出去。"}
+    - {severity: medium, title: "重复创建对象", evidence: "无", suggestion: "别在循环里创建对象。"}
+    - {severity: medium, title: "内存分配问题", evidence: "无", suggestion: "减少循环里的内存分配。"}
+  note: bad 把同一分配问题重复 3 次，无证据、无增量。
