@@ -12,8 +12,10 @@ from pathlib import Path
 import yaml
 
 from .. import defaults as _defaults_mod
+from ..providers.litellm import LiteLLMBackend
 from ..server import _normalize_one, _resolve_adapter, _resolve_endpoints
 from . import store
+from .calibrate import calibrate, load_gold, summarize
 from .metadata import rubric_hash
 from .runner import build_engines, make_run_id, run_eval
 from .schema import EvalTask, VariantSpec
@@ -123,4 +125,36 @@ async def run(args) -> dict:
         },
         "summary": entry.summary,
         "exported_jsonl": exported,
+    }
+
+
+async def run_calibrate(args) -> dict:
+    """`brain-region calibrate`：用 gold 对测盲评 judge 能否稳定把好的排在前面。"""
+    dd = _defaults_mod.apply()
+    registry = _resolve_endpoints(dd.get("endpoints") or {})
+    backend = LiteLLMBackend(timeout=float(dd.get("timeout", 90)), endpoint_registry=registry)
+
+    endpoint_ids = set((registry or {}).keys())
+    judge_specs = args.judges or [dd.get("normalizer_model", "claude-opus-4-8")]
+    judge_entries = [_normalize_one(s, endpoint_ids, dd.get("endpoints")) for s in judge_specs]
+
+    rubric_path = Path(args.rubric) if getattr(args, "rubric", None) else _DEFAULT_RUBRIC
+    rubric_text = rubric_path.read_text(encoding="utf-8") if rubric_path.exists() else ""
+    rhash = rubric_hash(rubric_text)
+
+    gold = load_gold(args.gold)
+    if not gold:
+        raise SystemExit(f"gold 无 *.yaml 条目: {args.gold}")
+
+    threshold = float(getattr(args, "threshold", 0.7))
+    run_id = make_run_id()
+    rows = await calibrate(gold, backend, judge_entries, rubric_text, rhash, run_id)
+    summary = summarize(rows, threshold=threshold)
+
+    return {
+        "run_id": run_id,
+        "judge_models": [je["model"] for je in judge_entries],
+        "rubric_hash": rhash,
+        "n_pairs": len(gold),
+        "summary": summary,
     }

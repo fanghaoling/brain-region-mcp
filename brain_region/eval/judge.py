@@ -77,8 +77,10 @@ def _labels(n: int) -> list[str]:
     return [chr(ord("X") + i) for i in range(n)]
 
 
-def _build_user(labeled: dict[str, list[dict]]) -> str:
+def _build_user(labeled: dict[str, list[dict]], task_context: str = "") -> str:
     parts = []
+    if task_context:
+        parts.append(f"【待审查内容摘要】\n{task_context.strip()}\n")
     for label, findings in labeled.items():
         parts.append(f"=== 输出 {label} ===")
         if not findings:
@@ -93,11 +95,12 @@ def _build_user(labeled: dict[str, list[dict]]) -> str:
 
 async def judge_task(
     backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
-    run_id: str, task_id: str, variant_outputs: dict,
+    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
 ) -> list[BlindJudgement]:
     """对一个任务的各变体输出盲评，返回每个变体一条 BlindJudgement。
 
     variant_outputs: {variant_name: outputs_json_str}（来自 EvalCaseRecord.outputs_json）。
+    task_context: 待审查内容摘要——给 judge 看"被审查的是什么"，才能判 missing_critical/相关性。
     """
     variants = list(variant_outputs.keys())
     # 1. 脱敏
@@ -115,7 +118,7 @@ async def judge_task(
     label_to_variant = dict(zip(labels, order))
     labeled = {lab: desens[v] for lab, v in label_to_variant.items()}
     # 3. 调 judge
-    user = _build_user(labeled)
+    user = _build_user(labeled, task_context)
     resp = await backend.complete(
         model=judge_entry["model"],
         system=rubric_text or RUBRIC_DEFAULT,

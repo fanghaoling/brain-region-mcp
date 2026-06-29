@@ -95,6 +95,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_eval.add_argument("--output-file", default=None)
 
+    p_cal = sub.add_parser("calibrate", help="judge 校准：用 gold 对测盲评 judge 能否稳定排序 good>bad")
+    p_cal.add_argument("gold", help="gold YAML 文件或目录（每条：id/failure_mode/task/good/bad/note）")
+    p_cal.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
+    p_cal.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+    p_cal.add_argument("--threshold", type=float, default=0.7, help="agreement 达标阈值（默认 0.7）")
+    p_cal.add_argument("--rubric", default=None, help="rubric 文件（默认 eval/rubrics/review_v1.md）")
+    p_cal.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_cal.add_argument("--output-file", default=None)
+
     return parser
 
 
@@ -122,6 +131,25 @@ def _eval_markdown(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _calibrate_markdown(result: dict) -> str:
+    """calibrate 汇总的简易 markdown 渲染。"""
+    s = result.get("summary", {})
+    verdict = "✅ 校准达标" if s.get("calibrated") else "❌ 未达标（judge/rubric 需调）"
+    lines = [
+        f"# Calibrate {result.get('run_id', '')}", "",
+        f"judges={result.get('judge_models')} pairs={result.get('n_pairs')} threshold={s.get('threshold')}",
+        f"agreement={s.get('agreed')}/{s.get('total')} = {s.get('agreement_rate')} → {verdict}", "",
+        "## 按 failure_mode",
+    ]
+    for fm, rate in (s.get("per_failure_mode") or {}).items():
+        lines.append(f"- {fm}: {rate}")
+    if s.get("per_metric"):
+        lines += ["", "## 按 metric"] + [f"- {m}: {r}" for m, r in s["per_metric"].items()]
+    if s.get("wrong_pairs"):
+        lines += ["", "## ❌ 错判（good 未 > bad）"] + [f"- {w}" for w in s["wrong_pairs"]]
+    return "\n".join(lines)
+
+
 def main() -> None:
     # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
     # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
@@ -134,6 +162,12 @@ def main() -> None:
         result = asyncio.run(eval_cli.run(args))
         if args.output_format != "json":
             result["rendered"] = _eval_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "calibrate":
+        result = asyncio.run(eval_cli.run_calibrate(args))
+        if args.output_format != "json":
+            result["rendered"] = _calibrate_markdown(result)
         _emit(result, args)
         return
     common = dict(
