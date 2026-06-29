@@ -38,6 +38,11 @@ def _redact(text: str) -> tuple[str, int]:
     return out, count
 
 
+def redact_text(text: str) -> tuple[str, int]:
+    """Redact common secret-looking values from diagnostic text."""
+    return _redact(text)
+
+
 def _take(text: str, *, field: str, remaining: int, meta: dict) -> tuple[str, int]:
     if remaining <= 0:
         if text:

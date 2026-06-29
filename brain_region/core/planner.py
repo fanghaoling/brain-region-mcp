@@ -1,6 +1,7 @@
 """Minimal planning support for the ``plan_task`` MCP tool."""
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import re
@@ -8,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from .consult.guard import prepare_request
+from .consult.guard import prepare_request, redact_text
 from .consult.report import ConsultRequest
 from .errors import classify_error
 from .stages.parse import extract_json_object
@@ -164,7 +165,7 @@ def _clamp_confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
-_FENCED_BLOCK_RE = re.compile(r"```(?:json|jsonc)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"(?m)^\s*//.*$")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
@@ -177,19 +178,71 @@ def _jsonc_to_json(text: str) -> str:
     return _TRAILING_COMMA_RE.sub(r"\1", text)
 
 
-def _raw_decode_object(text: str) -> dict | None:
-    brace = text.find("{")
-    if brace < 0:
+def _first_container_start(text: str) -> int:
+    starts = [idx for idx in (text.find("{"), text.find("[")) if idx >= 0]
+    return min(starts) if starts else -1
+
+
+def _balanced_container(text: str) -> str | None:
+    """Return the first balanced dict/list-looking container prefix."""
+    start = _first_container_start(text)
+    if start < 0:
         return None
-    candidate = text[brace:].lstrip()
+    pairs = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    quote = ""
+    escaped = False
+    for idx, char in enumerate(text[start:], start=start):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char in pairs:
+            stack.append(pairs[char])
+            continue
+        if stack and char == stack[-1]:
+            stack.pop()
+            if not stack:
+                return text[start : idx + 1]
+    return None
+
+
+def _coerce_plan_object(value: Any) -> dict | None:
+    if isinstance(value, dict):
+        return _unwrap_plan_object(value)
+    if isinstance(value, list):
+        return {"tasks": value}
+    return None
+
+
+def _raw_decode_plan_value(text: str) -> dict | None:
+    start = _first_container_start(text)
+    if start < 0:
+        return None
+    candidate = text[start:].lstrip()
     decoder = json.JSONDecoder()
     for raw in (candidate, _jsonc_to_json(candidate)):
         try:
             obj, _ = decoder.raw_decode(raw)
         except Exception:  # noqa: BLE001
             continue
-        if isinstance(obj, dict):
-            return obj
+        coerced = _coerce_plan_object(obj)
+        if coerced is not None:
+            return coerced
+    literal_candidate = _balanced_container(candidate)
+    if literal_candidate:
+        try:
+            obj = ast.literal_eval(literal_candidate)
+        except Exception:  # noqa: BLE001
+            return None
+        return _coerce_plan_object(obj)
     return None
 
 
@@ -217,10 +270,26 @@ def _extract_plan_object(content: str) -> dict | None:
     candidates = [match.group(1) for match in _FENCED_BLOCK_RE.finditer(content or "")]
     candidates.append(content or "")
     for candidate in candidates:
-        obj = _raw_decode_object(candidate)
+        obj = _raw_decode_plan_value(candidate)
         if obj is not None:
-            return _unwrap_plan_object(obj)
+            return obj
     return None
+
+
+def summarize_unparseable_plan_output(content: str, *, max_excerpt: int = 700) -> dict:
+    """Return a small, redacted diagnostic payload for planner parse failures."""
+    raw = content or ""
+    redacted, redacted_items = redact_text(raw)
+    excerpt = " ".join(redacted.split())
+    return {
+        "content_chars": len(raw),
+        "excerpt_chars": min(len(excerpt), max_excerpt),
+        "output_excerpt": excerpt[:max_excerpt],
+        "redacted_items": redacted_items,
+        "fenced_blocks": len(_FENCED_BLOCK_RE.findall(raw)),
+        "has_object_start": "{" in raw,
+        "has_array_start": "[" in raw,
+    }
 
 
 def _to_consult_request(request: PlanRequest) -> ConsultRequest:
@@ -407,6 +476,7 @@ class PlannerEngine:
                         "error": "Planner output could not be parsed as a plan JSON object",
                         "type": "parse_error",
                         "hint": "Lower temperature, simplify the planning prompt, or ask the model to return one JSON object.",
+                        "diagnostics": summarize_unparseable_plan_output(resp.content),
                     }
                 )
                 continue

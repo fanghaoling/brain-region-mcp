@@ -125,6 +125,36 @@ def test_parse_plan_accepts_jsonc_wrapper_and_trailing_commas():
     assert plan.confidence == 0.6
 
 
+def test_parse_plan_accepts_top_level_task_array():
+    content = """
+    [
+      {"title": "first task", "acceptance_criteria": ["done"]},
+      "second task"
+    ]
+    """
+    plan = parse_plan(content, plan_id="plan-array", model="strong-model")
+    assert plan is not None
+    assert plan.tasks[0]["title"] == "first task"
+    assert plan.tasks[1]["title"] == "second task"
+
+
+def test_parse_plan_accepts_python_literal_style_dict():
+    content = """```python
+    {
+      'summary': 'Single quoted plan',
+      'tasks': [
+        {'title': 'ship tolerant parser', 'dependencies': [],},
+      ],
+      'confidence': 0.7,
+    }
+    ```"""
+    plan = parse_plan(content, plan_id="plan-literal", model="strong-model")
+    assert plan is not None
+    assert plan.summary == "Single quoted plan"
+    assert plan.tasks[0]["title"] == "ship tolerant parser"
+    assert plan.confidence == 0.7
+
+
 def test_prepare_plan_request_redacts_and_preserves_success_criteria():
     request = PlanRequest(
         goal="Add planner. OPENAI_API_KEY=sk-abcdef1234567890",
@@ -157,9 +187,32 @@ async def test_planner_engine_uses_first_parseable_plan_after_failures():
     assert got["tasks"][0]["id"] == "T1"
     assert got["failed_models"][0]["type"] == "auth_error"
     assert got["failed_models"][1]["type"] == "parse_error"
+    assert got["failed_models"][1]["diagnostics"]["output_excerpt"] == "not json"
     assert got["usage"]["total_tokens"] == 45
     assert got["usage"]["cost_usd"] == 0.003
     assert backend.calls[0]["effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_planner_parse_error_diagnostics_are_redacted():
+    class _BadBackend:
+        async def complete(self, **kwargs):
+            return ModelResponse(
+                model="bad-json",
+                content="not json api_key=sk-secret1234567890",
+                usage={"total_tokens": 3},
+                cost_usd=0.001,
+            )
+
+    engine = PlannerEngine(backend=_BadBackend())
+    report = await engine.plan(PlanRequest(goal="Add diagnostics"), panel=[_panel("bad-json")])
+    got = report.to_dict()
+    diagnostics = got["failed_models"][0]["diagnostics"]
+    assert got["failed_models"][0]["type"] == "parse_error"
+    assert "sk-secret" not in diagnostics["output_excerpt"]
+    assert "[REDACTED]" in diagnostics["output_excerpt"]
+    assert diagnostics["content_chars"] > diagnostics["excerpt_chars"]
+    assert diagnostics["redacted_items"] == 1
 
 
 @pytest.mark.asyncio
