@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -163,6 +164,65 @@ def _clamp_confidence(value: Any) -> float:
     return max(0.0, min(1.0, confidence))
 
 
+_FENCED_BLOCK_RE = re.compile(r"```(?:json|jsonc)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_LINE_COMMENT_RE = re.compile(r"(?m)^\s*//.*$")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _jsonc_to_json(text: str) -> str:
+    """Remove JSONC comments and trailing commas without trying to be a full parser."""
+    text = _BLOCK_COMMENT_RE.sub("", text)
+    text = _LINE_COMMENT_RE.sub("", text)
+    return _TRAILING_COMMA_RE.sub(r"\1", text)
+
+
+def _raw_decode_object(text: str) -> dict | None:
+    brace = text.find("{")
+    if brace < 0:
+        return None
+    candidate = text[brace:].lstrip()
+    decoder = json.JSONDecoder()
+    for raw in (candidate, _jsonc_to_json(candidate)):
+        try:
+            obj, _ = decoder.raw_decode(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def _unwrap_plan_object(obj: dict) -> dict:
+    """Accept common wrappers from models that insist on adding a top-level label."""
+    for key in ("plan", "implementation_plan", "task_plan", "result"):
+        value = obj.get(key)
+        if isinstance(value, dict):
+            return value
+    return obj
+
+
+def _extract_plan_object(content: str) -> dict | None:
+    """Planner-specific tolerant JSON extraction.
+
+    Review/consult parsing stays stricter. Planner output is user-facing and
+    often produced by large reasoning models that add a short preface or notes
+    after the object despite instructions, so we accept the first parseable
+    JSON/JSONC object and ignore trailing prose.
+    """
+    obj = extract_json_object(content or "")
+    if obj is not None:
+        return _unwrap_plan_object(obj)
+
+    candidates = [match.group(1) for match in _FENCED_BLOCK_RE.finditer(content or "")]
+    candidates.append(content or "")
+    for candidate in candidates:
+        obj = _raw_decode_object(candidate)
+        if obj is not None:
+            return _unwrap_plan_object(obj)
+    return None
+
+
 def _to_consult_request(request: PlanRequest) -> ConsultRequest:
     constraints = list(request.constraints or [])
     for item in request.success_criteria or []:
@@ -226,7 +286,7 @@ def render_plan_prompt(request: PlanRequest) -> tuple[str, str]:
 
 
 def parse_plan(content: str, *, plan_id: str, model: str) -> PlanReport | None:
-    obj = extract_json_object(content or "")
+    obj = _extract_plan_object(content or "")
     if obj is None:
         return None
     report = PlanReport(
@@ -344,9 +404,9 @@ class PlannerEngine:
                 failed_models.append(
                     {
                         "model": label,
-                        "error": "Planner output could not be parsed as strict JSON",
+                        "error": "Planner output could not be parsed as a plan JSON object",
                         "type": "parse_error",
-                        "hint": "Lower temperature or simplify the planning prompt.",
+                        "hint": "Lower temperature, simplify the planning prompt, or ask the model to return one JSON object.",
                     }
                 )
                 continue

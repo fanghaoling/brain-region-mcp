@@ -88,6 +88,43 @@ def test_parse_plan_from_fenced_json():
     assert plan.confidence == 1.0
 
 
+def test_parse_plan_ignores_trailing_prose_after_json():
+    content = """
+    Here is the plan:
+    {
+      "summary": "Use the first parseable object.",
+      "tasks": [{"title": "parse tolerant output"}],
+      "acceptance_criteria": ["parsed"]
+    }
+
+    Notes: I can also explain the reasoning if needed.
+    """
+    plan = parse_plan(content, plan_id="plan-tail", model="strong-model")
+    assert plan is not None
+    assert plan.summary == "Use the first parseable object."
+    assert plan.tasks[0]["title"] == "parse tolerant output"
+
+
+def test_parse_plan_accepts_jsonc_wrapper_and_trailing_commas():
+    content = """```jsonc
+    {
+      "plan": {
+        // some models add JSONC comments
+        "summary": "Wrapped plan",
+        "tasks": [
+          {"title": "unwrap me",},
+        ],
+        "confidence": 0.6,
+      },
+    }
+    ```"""
+    plan = parse_plan(content, plan_id="plan-wrapper", model="strong-model")
+    assert plan is not None
+    assert plan.summary == "Wrapped plan"
+    assert plan.tasks[0]["title"] == "unwrap me"
+    assert plan.confidence == 0.6
+
+
 def test_prepare_plan_request_redacts_and_preserves_success_criteria():
     request = PlanRequest(
         goal="Add planner. OPENAI_API_KEY=sk-abcdef1234567890",
