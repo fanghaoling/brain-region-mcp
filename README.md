@@ -29,6 +29,7 @@ without changing the core pipeline.
 - Route a goal/problem to likely Brain Regions with `route_regions` as a local, deterministic precursor to context scheduling.
 - Suggest explicit manual next steps with `suggest_workflow` without auto-calling tools or models.
 - Inspect model routing with `list_model_routes` so bare model names and endpoint-backed models are not confused.
+- Attach model profile metadata such as `cheap`, `fast`, `flagship`, `sleep`, or `awake` for preflight visibility.
 - Merge defaults from builtin values, global config, project config, environment variables, and explicit call arguments.
 
 ## Architecture
@@ -338,6 +339,7 @@ Typical local config path:
 - `effort`
 - `max_cost_usd`
 - `endpoints`
+- `model_profiles`
 - `privacy_policy`
 - `context_modes`
 
@@ -376,6 +378,34 @@ Panel shortcuts:
 For example, `"claude-opus-4-8"` is a bare official-provider route and usually needs `ANTHROPIC_API_KEY`, while
 `"modelbridge_anthropic/claude-opus-4-8"` uses the configured gateway and its `MODEBRIDGE_API_KEY`. Run
 `list_model_routes` when you want to inspect the exact route before spending tokens.
+
+Model profile metadata is optional and descriptive. It is shown in `list_model_routes` and tool `routing` metadata, but
+does not automatically select models yet:
+
+```jsonc
+{
+  "model_profiles": {
+    "modelbridge_openai/gpt-5.4-mini": {
+      "activation_role": "sleep",
+      "tier": "economy",
+      "cost": "low",
+      "latency": "fast",
+      "tags": ["cheap", "fast"],
+      "quality_score": 0.65,
+      "cost_score": 0.9,
+      "speed_score": 0.85
+    },
+    "modelbridge_anthropic/claude-opus-4-8": {
+      "activation_role": "awake",
+      "tier": "flagship",
+      "cost": "high",
+      "tags": ["deep_reasoning", "architecture"],
+      "quality_score": 0.98,
+      "cost_score": 0.2
+    }
+  }
+}
+```
 
 ## Cost And Effort Controls
 

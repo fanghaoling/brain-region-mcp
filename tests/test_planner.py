@@ -252,6 +252,8 @@ async def test_plan_task_routing_metadata(monkeypatch):
     assert result["plan_id"] == "plan-route"
     assert result["routing"]["panel_source"] == "planner_panel"
     assert result["routing"]["resolved_panel"] == ["planner-model"]
+    assert result["routing"]["model_routes"][0]["route_type"] == "official_litellm"
+    assert result["routing"]["route_warnings"] == []
     assert result["routing"]["strategy"] == "first_parseable_plan"
 
     explicit = await server.plan_task(goal="x", panel=["explicit-model"])

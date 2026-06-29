@@ -71,6 +71,55 @@ list_model_routes(panel=[
 The tool only returns route metadata, endpoint declarations, model lists, and whether a key is present. It does not call
 models or return API key values.
 
+## Model Profiles
+
+Endpoint `models` can be plain strings or objects with optional profile metadata:
+
+```jsonc
+{
+  "endpoints": {
+    "modelbridge_openai": {
+      "provider": "openai",
+      "base_url": "https://www.modelbridge.cloud/v1",
+      "api_key_env": "MODEBRIDGE_API_KEY",
+      "models": [
+        {
+          "id": "gpt-5.4-mini",
+          "activation_role": "sleep",
+          "tier": "economy",
+          "cost": "low",
+          "latency": "fast",
+          "tags": ["cheap", "fast"],
+          "quality_score": 0.65,
+          "cost_score": 0.9,
+          "speed_score": 0.85
+        }
+      ]
+    }
+  }
+}
+```
+
+You can also keep endpoint `models` as strings and place profiles in the top-level `model_profiles` map. Keys may be a
+bare model name or an endpoint ref:
+
+```jsonc
+{
+  "model_profiles": {
+    "modelbridge_anthropic/claude-opus-4-8": {
+      "activation_role": "awake",
+      "tier": "flagship",
+      "cost": "high",
+      "tags": ["deep_reasoning", "architecture"],
+      "quality_score": 0.98,
+      "cost_score": 0.2
+    }
+  }
+}
+```
+
+Profiles are descriptive preflight metadata for humans and future schedulers. They do not automatically select models.
+
 ## Common Failures
 
 - `Empty or invalid response` with an HTML page usually means an OpenAI-compatible `base_url` is missing `/v1`.

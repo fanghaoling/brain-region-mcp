@@ -69,6 +69,54 @@ list_model_routes(panel=[
 
 它只返回路由、endpoint、模型列表和 key 是否存在，不会调用模型，也不会返回 API key 明文。
 
+## 模型 Profile
+
+`endpoints.<id>.models` 既可以继续写字符串，也可以写带 profile 的对象：
+
+```jsonc
+{
+  "endpoints": {
+    "modelbridge_openai": {
+      "provider": "openai",
+      "base_url": "https://www.modelbridge.cloud/v1",
+      "api_key_env": "MODEBRIDGE_API_KEY",
+      "models": [
+        {
+          "id": "gpt-5.4-mini",
+          "activation_role": "sleep",
+          "tier": "economy",
+          "cost": "low",
+          "latency": "fast",
+          "tags": ["cheap", "fast"],
+          "quality_score": 0.65,
+          "cost_score": 0.9,
+          "speed_score": 0.85
+        }
+      ]
+    }
+  }
+}
+```
+
+也可以保持 `models` 为字符串，把 profile 放在顶层 `model_profiles`。key 可以是裸模型名，也可以是 endpoint 引用：
+
+```jsonc
+{
+  "model_profiles": {
+    "modelbridge_anthropic/claude-opus-4-8": {
+      "activation_role": "awake",
+      "tier": "flagship",
+      "cost": "high",
+      "tags": ["deep_reasoning", "architecture"],
+      "quality_score": 0.98,
+      "cost_score": 0.2
+    }
+  }
+}
+```
+
+Profile 只是给人和未来 scheduler 看的 preflight 元数据，目前不会自动选择模型。
+
 ## 常见错误
 
 - `Empty or invalid response` 并返回 HTML 页面：OpenAI 兼容 endpoint 的 `base_url` 通常缺少 `/v1`。

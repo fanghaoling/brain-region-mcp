@@ -322,6 +322,7 @@ builtin < global config < project config < env < explicit tool args
 - `effort`
 - `max_cost_usd`
 - `endpoints`
+- `model_profiles`
 - `privacy_policy`
 - `context_modes`
 
@@ -359,6 +360,33 @@ Panel 快捷写法：
 例如 `"claude-opus-4-8"` 是裸官方 provider 路由，通常需要 `ANTHROPIC_API_KEY`；而
 `"modelbridge_anthropic/claude-opus-4-8"` 会走配置里的中转站，使用它声明的 `MODEBRIDGE_API_KEY`。不确定时可以先调用
 `list_model_routes` 查看实际路由。
+
+模型 profile 是可选的描述性元数据，会显示在 `list_model_routes` 和工具返回的 `routing` 里，但目前不会自动选择模型：
+
+```jsonc
+{
+  "model_profiles": {
+    "modelbridge_openai/gpt-5.4-mini": {
+      "activation_role": "sleep",
+      "tier": "economy",
+      "cost": "low",
+      "latency": "fast",
+      "tags": ["cheap", "fast"],
+      "quality_score": 0.65,
+      "cost_score": 0.9,
+      "speed_score": 0.85
+    },
+    "modelbridge_anthropic/claude-opus-4-8": {
+      "activation_role": "awake",
+      "tier": "flagship",
+      "cost": "high",
+      "tags": ["deep_reasoning", "architecture"],
+      "quality_score": 0.98,
+      "cost_score": 0.2
+    }
+  }
+}
+```
 
 ## 成本与 Effort 控制
 

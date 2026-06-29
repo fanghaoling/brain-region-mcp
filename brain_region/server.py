@@ -179,7 +179,7 @@ def _str_specs(item: str, endpoint_ids: set, endpoints_cfg: dict | None) -> list
     if item == "endpoints":
         all_models: list[tuple] = []
         for eid, ep in (endpoints_cfg or {}).items():
-            for m in (ep.get("models") or []):
+            for m in _endpoint_model_ids(ep):
                 all_models.append((eid, m, f"{eid}/{m}"))
         if not all_models:
             raise ValueError(
@@ -188,7 +188,7 @@ def _str_specs(item: str, endpoint_ids: set, endpoints_cfg: dict | None) -> list
         return all_models
     # 全展开：str 本身是 endpoint_id
     if item in endpoint_ids:
-        models = ((endpoints_cfg or {}).get(item) or {}).get("models") or []
+        models = _endpoint_model_ids((endpoints_cfg or {}).get(item) or {})
         if not models:
             raise ValueError(
                 f"panel {item!r} 是 endpoint_id 但 endpoints.{item}.models 未声明（全展开需 models 列表）"
@@ -220,6 +220,187 @@ def _normalize_one(spec, endpoint_ids: set, endpoints_cfg: dict | None = None) -
     return _normalize_panel([spec], endpoint_ids, endpoints_cfg)[0]
 
 
+_PROFILE_KEYS = {
+    "tier",
+    "cost",
+    "latency",
+    "activation_role",
+    "quality_score",
+    "cost_score",
+    "speed_score",
+    "structured_output_score",
+    "context_score",
+    "tags",
+    "capabilities",
+    "notes",
+}
+_SCORE_KEYS = {
+    "quality_score",
+    "cost_score",
+    "speed_score",
+    "structured_output_score",
+    "context_score",
+}
+
+
+def _model_id(spec) -> str:
+    if isinstance(spec, dict):
+        model = spec.get("id") or spec.get("model") or spec.get("name")
+        if not model:
+            raise ValueError(f"endpoint model object must include id or model: {spec!r}")
+        return str(model)
+    return str(spec)
+
+
+def _endpoint_model_specs(ep: dict | None) -> list:
+    return list((ep or {}).get("models") or [])
+
+
+def _endpoint_model_ids(ep: dict | None) -> list[str]:
+    return [_model_id(spec) for spec in _endpoint_model_specs(ep)]
+
+
+def _as_profile_list(value) -> list[str]:
+    if value is None:
+        return []
+    values = value if isinstance(value, list) else [value]
+    out: list[str] = []
+    for item in values:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _normalize_profile(profile: dict | None) -> dict:
+    if not isinstance(profile, dict):
+        return {}
+    normalized: dict = {}
+    for key, value in profile.items():
+        if key in _SCORE_KEYS:
+            try:
+                normalized[key] = round(max(0.0, min(1.0, float(value))), 3)
+            except Exception:  # noqa: BLE001
+                continue
+        elif key in ("tags", "capabilities"):
+            normalized[key] = _as_profile_list(value)
+        elif key in _PROFILE_KEYS or key == "profile_source":
+            normalized[key] = value
+    return {key: value for key, value in normalized.items() if value not in ("", [], None)}
+
+
+def _merge_profiles(*profiles: dict | None) -> dict:
+    merged: dict = {}
+    sources: list[str] = []
+    for profile in profiles:
+        normalized = _normalize_profile(profile)
+        if not normalized:
+            continue
+        source = normalized.pop("profile_source", None)
+        if source:
+            sources.extend(_as_profile_list(source))
+        for key, value in normalized.items():
+            if key in ("tags", "capabilities"):
+                merged[key] = _as_profile_list(merged.get(key, []) + _as_profile_list(value))
+            else:
+                merged[key] = value
+    if sources:
+        merged["profile_source"] = _as_profile_list(sources)
+    return merged
+
+
+def _profile_from_model_spec(spec) -> dict:
+    if not isinstance(spec, dict):
+        return {}
+    profile = dict(spec.get("profile") or {})
+    for key, value in spec.items():
+        if key in _PROFILE_KEYS:
+            profile[key] = value
+    if profile:
+        profile["profile_source"] = "endpoint_model"
+    return profile
+
+
+def _endpoint_inline_profile(endpoint_id: str | None, model: str, endpoints_cfg: dict) -> dict:
+    if endpoint_id is None:
+        return {}
+    for spec in _endpoint_model_specs((endpoints_cfg or {}).get(endpoint_id)):
+        if _model_id(spec) == model:
+            return _profile_from_model_spec(spec)
+    return {}
+
+
+def _inferred_model_profile(model: str) -> dict:
+    """Coarse, non-authoritative profile used only for visibility."""
+    m = str(model or "").casefold()
+    profile = {
+        "tier": "standard",
+        "cost": "medium",
+        "latency": "medium",
+        "quality_score": 0.7,
+        "cost_score": 0.5,
+        "speed_score": 0.5,
+        "structured_output_score": 0.6,
+        "tags": ["general"],
+        "profile_source": "heuristic",
+    }
+    if any(marker in m for marker in ("opus", "gpt-5.5", "o3", "max")):
+        profile.update(
+            {
+                "tier": "flagship",
+                "cost": "high",
+                "quality_score": 0.95,
+                "cost_score": 0.25,
+                "speed_score": 0.45,
+                "tags": ["flagship", "deep_reasoning"],
+            }
+        )
+    elif any(marker in m for marker in ("mini", "haiku", "flash", "lite", "nano")):
+        profile.update(
+            {
+                "tier": "economy",
+                "cost": "low",
+                "latency": "fast",
+                "quality_score": 0.65,
+                "cost_score": 0.85,
+                "speed_score": 0.85,
+                "tags": ["cheap", "fast"],
+            }
+        )
+    if any(marker in m for marker in ("gpt", "claude", "opus", "o3", "o4")):
+        profile["capabilities"] = ["reasoning", "coding", "review"]
+    return profile
+
+
+def _configured_profile(defaults: dict, *keys: str) -> dict:
+    profiles = defaults.get("model_profiles") or {}
+    if not isinstance(profiles, dict):
+        return {}
+    merged: dict = {}
+    for key in keys:
+        value = profiles.get(key)
+        if isinstance(value, dict):
+            value = {**value, "profile_source": f"model_profiles.{key}"}
+            merged = _merge_profiles(merged, value)
+    return merged
+
+
+def _model_profile(
+    *,
+    model: str,
+    label: str,
+    endpoint_id: str | None,
+    defaults: dict,
+    endpoints_cfg: dict,
+) -> dict:
+    endpoint_ref = f"{endpoint_id}/{model}" if endpoint_id else ""
+    return _merge_profiles(
+        _inferred_model_profile(model),
+        _configured_profile(defaults, model, label, endpoint_ref),
+        _endpoint_inline_profile(endpoint_id, model, endpoints_cfg),
+    )
+
+
 def _official_credential_hint(model: str) -> str:
     """Best-effort hint for bare LiteLLM model strings."""
     m = str(model or "").lower()
@@ -248,7 +429,8 @@ def _endpoint_key_status(ep: dict) -> str:
 def _configured_endpoint_models(endpoints_cfg: dict) -> list[dict]:
     endpoints: list[dict] = []
     for eid, ep in sorted((endpoints_cfg or {}).items()):
-        models = [str(model) for model in (ep.get("models") or [])]
+        model_specs = _endpoint_model_specs(ep)
+        models = [_model_id(spec) for spec in model_specs]
         endpoints.append(
             {
                 "id": eid,
@@ -258,9 +440,56 @@ def _configured_endpoint_models(endpoints_cfg: dict) -> list[dict]:
                 "api_key_status": _endpoint_key_status(ep),
                 "models": models,
                 "model_refs": [f"{eid}/{model}" for model in models],
+                "model_profiles": [
+                    {
+                        "id": _model_id(spec),
+                        "ref": f"{eid}/{_model_id(spec)}",
+                        "profile": _normalize_profile(_profile_from_model_spec(spec)),
+                    }
+                    for spec in model_specs
+                    if _profile_from_model_spec(spec)
+                ],
             }
         )
     return endpoints
+
+
+def _route_warnings(routes: list[dict], ambiguous_models: list[dict]) -> list[dict]:
+    warnings: list[dict] = []
+    for route in routes:
+        if route.get("route_type") == "configured_endpoint" and route.get("api_key_status") == "missing":
+            warnings.append(
+                {
+                    "type": "missing_endpoint_key",
+                    "model": route.get("model"),
+                    "label": route.get("label"),
+                    "endpoint_id": route.get("endpoint_id"),
+                    "message": f"Endpoint {route.get('endpoint_id')!r} key is not available in the current process.",
+                }
+            )
+    for item in ambiguous_models:
+        model = item["model"]
+        refs = item["endpoint_refs"]
+        if "bare_model_string_also_used" in item["reasons"]:
+            warnings.append(
+                {
+                    "type": "bare_model_has_endpoint_ref",
+                    "model": model,
+                    "official_ref": item.get("official_ref"),
+                    "endpoint_refs": refs,
+                    "message": f"Bare model {model!r} bypasses configured endpoints; use {refs[0]!r} to route through that gateway.",
+                }
+            )
+        if "declared_under_multiple_endpoints" in item["reasons"]:
+            warnings.append(
+                {
+                    "type": "model_declared_under_multiple_endpoints",
+                    "model": model,
+                    "endpoint_refs": refs,
+                    "message": f"Model {model!r} is declared under multiple endpoints; use an endpoint prefix to choose explicitly.",
+                }
+            )
+    return warnings
 
 
 def _describe_model_routes(panel: list | None, defaults: dict, *, panel_source: str = "explicit") -> dict:
@@ -290,6 +519,13 @@ def _describe_model_routes(panel: list | None, defaults: dict, *, panel_source: 
                     "endpoint_id": None,
                     "route_type": "official_litellm",
                     "credential_hint": _official_credential_hint(model),
+                    "profile": _model_profile(
+                        model=model,
+                        label=entry["label"],
+                        endpoint_id=None,
+                        defaults=defaults,
+                        endpoints_cfg=endpoints_cfg,
+                    ),
                     "note": "Bare model strings bypass configured endpoints. Use endpoint_id/model to route through a gateway.",
                 }
             )
@@ -305,6 +541,13 @@ def _describe_model_routes(panel: list | None, defaults: dict, *, panel_source: 
                 "base_url": ep.get("base_url"),
                 "api_key_env": ep.get("api_key_env") or "",
                 "api_key_status": _endpoint_key_status(ep),
+                "profile": _model_profile(
+                    model=model,
+                    label=entry["label"],
+                    endpoint_id=endpoint_id,
+                    defaults=defaults,
+                    endpoints_cfg=endpoints_cfg,
+                ),
             }
         )
 
@@ -334,9 +577,11 @@ def _describe_model_routes(panel: list | None, defaults: dict, *, panel_source: 
             ref for refs in endpoint_model_refs.values() for ref in refs
         ),
         "ambiguous_models": ambiguous_models,
+        "warnings": _route_warnings(routes, ambiguous_models),
         "notes": [
             "A bare model string such as 'claude-opus-4-8' uses the official LiteLLM provider route.",
             "Use 'endpoint_id/model' such as 'modelbridge_anthropic/claude-opus-4-8' to use a configured gateway key.",
+            "Profiles are descriptive metadata for preflight and future scheduling; they do not automatically select models yet.",
         ],
     }
 
@@ -732,6 +977,7 @@ async def plan_task(
     endpoint_ids = set((dd.get("endpoints") or {}).keys())
     raw_panel, panel_source = _resolve_planner_panel(panel, dd)
     panel_used = _normalize_panel(raw_panel, endpoint_ids, dd.get("endpoints"))
+    route_info = _describe_model_routes(raw_panel, dd, panel_source=panel_source)
     cost_limit = max_cost_usd if max_cost_usd is not None else dd.get("planner_max_cost_usd")
     if cost_limit is None:
         cost_limit = dd.get("consult_max_cost_usd")
@@ -762,6 +1008,9 @@ async def plan_task(
     result["routing"] = {
         "panel_source": panel_source,
         "resolved_panel": [entry["label"] for entry in panel_used],
+        "model_routes": route_info["resolved_panel"],
+        "route_warnings": route_info["warnings"],
+        "ambiguous_models": route_info["ambiguous_models"],
         "strategy": "first_parseable_plan",
     }
     return result
@@ -798,6 +1047,7 @@ async def consult_problem(
     endpoint_ids = set((dd.get("endpoints") or {}).keys())
     raw_panel, panel_source = _resolve_consult_panel(panel, dd)
     panel_used = _normalize_panel(raw_panel, endpoint_ids, dd.get("endpoints"))
+    route_info = _describe_model_routes(raw_panel, dd, panel_source=panel_source)
     consultants_used, mode_used, consultants_source, mode_source = _resolve_consultants_with_source(consultants, mode, dd)
     cost_limit = max_cost_usd if max_cost_usd is not None else dd.get("consult_max_cost_usd")
     if cost_limit is None:
@@ -835,6 +1085,9 @@ async def consult_problem(
         "consultants_source": consultants_source,
         "resolved_panel": [entry["label"] for entry in panel_used],
         "resolved_consultants": list(consultants_used),
+        "model_routes": route_info["resolved_panel"],
+        "route_warnings": route_info["warnings"],
+        "ambiguous_models": route_info["ambiguous_models"],
     }
     # 只记录 consult 元数据与 advice id，不记录 prompt/问题正文/advice 全文。
     reviews_db.record_consultation(result)

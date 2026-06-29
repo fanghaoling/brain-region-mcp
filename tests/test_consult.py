@@ -148,6 +148,8 @@ async def test_consult_problem_routing_metadata(monkeypatch):
     assert result["panel"] == ["fast-model"]
     assert result["routing"]["panel_source"] == "consult_panel"
     assert result["routing"]["consultants_source"] == "consult_consultants"
+    assert result["routing"]["model_routes"][0]["route_type"] == "official_litellm"
+    assert result["routing"]["route_warnings"] == []
 
     challenge = await server.consult_problem(problem="x", mode="challenge")
     assert challenge["mode"] == "challenge"
