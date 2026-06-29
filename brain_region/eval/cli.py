@@ -12,11 +12,19 @@ from pathlib import Path
 import yaml
 
 from .. import defaults as _defaults_mod
+from ..core.regions import REGIONS_DIR
 from ..providers.litellm import LiteLLMBackend
 from ..server import _normalize_one, _resolve_adapter, _resolve_endpoints
 from . import store
 from .calibrate import calibrate, load_gold, summarize
 from .metadata import rubric_hash
+from .routing import (
+    DEFAULT_ROUTING_VARIANTS,
+    compute_routing_summary,
+    make_routing_run_id,
+    routing_sanity,
+    run_routing_eval,
+)
 from .runner import build_engines, make_run_id, run_eval
 from .schema import EvalTask, VariantSpec
 
@@ -38,6 +46,7 @@ def load_tasks(fixtures_dir: str) -> list[EvalTask]:
                 task_type=d.get("task_type", "review"),
                 difficulty=d.get("difficulty", ""),
                 input=d.get("input") or {},
+                gold_regions=[str(g) for g in (d.get("gold_regions") or [])],
                 notes=d.get("notes", ""),
                 frozen=bool(d.get("frozen", True)),
             ))
@@ -125,6 +134,46 @@ async def run(args) -> dict:
         },
         "summary": entry.summary,
         "exported_jsonl": exported,
+    }
+
+
+def run_routing(args) -> dict:
+    """`brain-region routing`：量 wake_gate 路由精度（免费，不调模型）。
+
+    对带 gold_regions 的任务跑 wake_gate（A=no_defense vs B=full），聚合
+    precision/recall/missed_wake_rate/false_wake_rate，sanity 检兜底是否降 missed-wake。
+    """
+    tasks = load_tasks(args.fixtures_dir)
+    if not tasks:
+        raise SystemExit(f"fixtures 目录无 *.yaml 任务: {args.fixtures_dir}")
+    scored = [t for t in tasks if t.gold_regions]
+    if not scored:
+        raise SystemExit(f"fixtures 无 gold_regions 的任务（routing 需要）: {args.fixtures_dir}")
+
+    regions_dir = getattr(args, "regions_dir", None) or REGIONS_DIR
+    variants = DEFAULT_ROUTING_VARIANTS
+    run_id = make_routing_run_id()
+    records = run_routing_eval(scored, variants, run_id=run_id, regions_dir=regions_dir)
+    summary = compute_routing_summary(records)
+    summary["sanity"] = routing_sanity(records, summary)
+
+    return {
+        "run_id": run_id,
+        "n_tasks": len(scored),
+        "variants": [v.name for v in variants],
+        "summary": summary,
+        "per_task": [
+            {
+                "task_id": r.task_id,
+                "variant": r.variant,
+                "gold": r.gold_regions,
+                "woken": r.woken,
+                "hit": r.hit,
+                "missed": r.missed,
+                "false_wake": r.false_wake,
+            }
+            for r in records
+        ],
     }
 
 

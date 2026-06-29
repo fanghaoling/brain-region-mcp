@@ -104,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_cal.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_cal.add_argument("--output-file", default=None)
 
+    p_route = sub.add_parser("routing", help="量 wake_gate 路由精度（A=no_defense vs B=full，免费不调模型）")
+    p_route.add_argument("fixtures_dir", help="fixtures 目录（*.yaml 任务，需带 gold_regions）")
+    p_route.add_argument("--regions-dir", default=None, help="region yaml 目录（默认内置 REGIONS_DIR）")
+    p_route.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_route.add_argument("--output-file", default=None)
+
     return parser
 
 
@@ -150,6 +156,29 @@ def _calibrate_markdown(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _routing_markdown(result: dict) -> str:
+    """routing 汇总的简易 markdown 渲染。"""
+    s = result.get("summary", {})
+    pv = s.get("per_variant", {})
+    lines = [
+        f"# Routing eval {result.get('run_id', '')}", "",
+        f"tasks={result.get('n_tasks')} variants={result.get('variants')}（A=no_defense vs B=full）", "",
+        "| variant | precision | recall | missed_wake_rate | false_wake_rate |",
+        "|---|---|---|---|---|",
+    ]
+    for name, m in pv.items():
+        lines.append(
+            f"| {name} | {m.get('precision')} | {m.get('recall')} | "
+            f"{m.get('missed_wake_rate')} | {m.get('false_wake_rate')} |"
+        )
+    sanity = s.get("sanity", {})
+    if sanity.get("errors"):
+        lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
+    if sanity.get("warnings"):
+        lines += ["", "## ⚠️ Sanity warnings"] + [f"- {w}" for w in sanity["warnings"]]
+    return "\n".join(lines)
+
+
 def main() -> None:
     # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
     # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
@@ -168,6 +197,12 @@ def main() -> None:
         result = asyncio.run(eval_cli.run_calibrate(args))
         if args.output_format != "json":
             result["rendered"] = _calibrate_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "routing":
+        result = eval_cli.run_routing(args)  # 同步、不调模型
+        if args.output_format != "json":
+            result["rendered"] = _routing_markdown(result)
         _emit(result, args)
         return
     common = dict(

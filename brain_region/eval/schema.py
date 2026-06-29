@@ -23,6 +23,7 @@ class EvalTask:
     difficulty: str = ""  # simple | complex | cross_domain（分层用）
     input: dict = field(default_factory=dict)
     # input = {content, document_type, files, panel, dimensions, extra_context}
+    gold_regions: list[str] = field(default_factory=list)  # routing eval：本任务【应唤醒】的 region（wake 精度 ground truth）
     notes: str = ""
     frozen: bool = True
 

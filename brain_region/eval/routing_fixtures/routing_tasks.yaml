@@ -1,0 +1,24 @@
+# routing eval 任务集：每个任务带 gold_regions（应唤醒的 region）。
+# wake_gate 是规则、不调模型，故这批任务零成本跑。用来量路由精度 + 假阴性兜底价值。
+# 注意 002_security_sentinel：sqli/越权 是 security 的 sentinel_keywords（不是 triggers），
+#   故 security 不会被 retrieve/escalate——只有开 sentinel 的 full 变体能兜住（证明兜底价值）。
+
+- id: rt-001-ecs-perf
+  input:
+    content: "Optimize the Burst job system performance: memory allocations in the hot path cause latency."
+  gold_regions: [performance, unity_ecs]
+
+- id: rt-002-security-sentinel
+  input:
+    content: "Check this endpoint for sqli and 越权 before launch."
+  gold_regions: [security]
+
+- id: rt-003-planning
+  input:
+    content: "Create a roadmap with milestones and acceptance criteria for the data migration."
+  gold_regions: [planning]
+
+- id: rt-004-debugging
+  input:
+    content: "Flaky test: intermittent AssertionError, cannot reproduce the failure."
+  gold_regions: [debugging]
