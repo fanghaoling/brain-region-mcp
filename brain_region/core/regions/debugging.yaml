@@ -1,0 +1,23 @@
+id: debugging
+name: Debugging Region
+description: Root-cause analysis, reproductions, errors, failing tests, and stuck investigations.
+triggers:
+  - debug
+  - debugging
+  - bug
+  - error
+  - exception
+  - failure
+  - failing
+  - flaky
+  - reproduce
+  - reproduction
+  - stack trace
+  - stuck
+  - issue
+  - 调试
+  - 报错
+  - 失败
+  - 卡住
+  - 复现
+negative_triggers: []

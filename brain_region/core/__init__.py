@@ -5,6 +5,7 @@ from .document import DocumentType, ReviewDocument
 from .engine import ReviewEngine
 from .pipeline import Pipeline, PipelineContext, Stage
 from .planner import PlanReport, PlanRequest, PlannerEngine
+from .regions import RegionDefinition, route_regions
 from .report import CanonicalFinding, Finding, ReviewReport
 
 __all__ = [
@@ -14,6 +15,8 @@ __all__ = [
     "PlanRequest",
     "PlanReport",
     "PlannerEngine",
+    "RegionDefinition",
+    "route_regions",
     "Pipeline",
     "PipelineContext",
     "Stage",

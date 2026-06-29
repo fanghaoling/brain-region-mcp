@@ -1,0 +1,25 @@
+id: performance
+name: Performance Region
+description: Runtime performance, memory, throughput, latency, allocation, concurrency, and cost.
+triggers:
+  - performance
+  - latency
+  - throughput
+  - slow
+  - memory
+  - allocation
+  - allocator
+  - cache
+  - cpu
+  - gpu
+  - cost
+  - token cost
+  - burst
+  - job system
+  - 性能
+  - 延迟
+  - 吞吐
+  - 内存
+  - 慢
+  - 成本
+negative_triggers: []

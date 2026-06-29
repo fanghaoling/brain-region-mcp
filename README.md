@@ -26,6 +26,7 @@ without changing the core pipeline.
 - Track review memory with `mark_finding` so accepted/rejected findings can influence later confidence calibration.
 - Ask external consultant models with `consult_problem` and record useful advice with `mark_advice`.
 - Generate executable task plans with `plan_task`, then review the plan before implementation.
+- Route a goal/problem to likely Brain Regions with `route_regions` as a local, deterministic precursor to context scheduling.
 - Merge defaults from builtin values, global config, project config, environment variables, and explicit call arguments.
 
 ## Architecture
@@ -159,6 +160,40 @@ Optional config:
 ```
 
 If `planner_panel` is not configured, planning falls back to `consult_panel`, then `panel`.
+
+## Brain Regions
+
+`route_regions` is the first small step toward region-based context scheduling. It is deliberately local and
+deterministic: it does not call models, read memory, or trigger review/consult/planner tools. It only ranks static
+region definitions by explicit triggers and returns an activation trace.
+
+```python
+route_regions(
+    goal="Optimize a Unity ECS FlowField system that allocates too much memory",
+    files={
+        "Assets/Scripts/FlowFieldSystem.cs": "...",
+    },
+    top_k=3,
+)
+```
+
+Example result shape:
+
+```jsonc
+{
+  "selected": [
+    {"id": "unity_ecs", "score": 4, "matched_triggers": [...]},
+    {"id": "performance", "score": 4, "matched_triggers": [...]}
+  ],
+  "trace": {
+    "strategy": "deterministic_keyword_v1",
+    "input": {"file_contents_used": false}
+  }
+}
+```
+
+Built-in regions currently include `planning`, `review`, `debugging`, `performance`, `security`, `memory`, `research`,
+and `unity_ecs`. This tool is advisory; future schedulers must explicitly decide whether to consume its result.
 
 ## Knowledge Base
 

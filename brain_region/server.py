@@ -46,6 +46,8 @@ from .core.consult import ConsultEngine, ConsultRequest  # noqa: E402
 from .core.consultants import CONSULTANTS_DIR, list_consultants as _list_consultant_files  # noqa: E402
 from .core.engine import ReviewEngine  # noqa: E402
 from .core.planner import PlanRequest, PlannerEngine  # noqa: E402
+from .core.regions import REGIONS_DIR, load_regions as _load_regions  # noqa: E402
+from .core.regions import route_regions as _route_regions  # noqa: E402
 from .core.report import CanonicalFinding, Finding, ReviewReport  # noqa: E402
 from .core.reviewers.loader import list_reviewers as _list_reviewer_files  # noqa: E402
 from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E402
@@ -745,6 +747,39 @@ def list_reviewers(adapter: str = "auto") -> dict:
 def list_consultants() -> dict:
     """列出可用外援会诊角色。"""
     return {"consultants": _list_consultant_files(CONSULTANTS_DIR)}
+
+
+@mcp.tool()
+def list_regions() -> dict:
+    """List available Brain Regions."""
+    regions = [region.to_dict() for region in _load_regions(REGIONS_DIR)]
+    return {"regions": regions}
+
+
+@mcp.tool()
+def route_regions(
+    goal: str = "",
+    problem: str = "",
+    context: str = "",
+    files: dict[str, str] | None = None,
+    top_k: int = 3,
+    min_score: int = 2,
+) -> dict:
+    """Recommend relevant Brain Regions from local deterministic rules.
+
+    This tool is read-only: it does not call models, read memory, or trigger
+    review/consult/planner tools. File contents are ignored; file paths are
+    used only as weak metadata.
+    """
+    return _route_regions(
+        goal=goal,
+        problem=problem,
+        context=context,
+        files=files or {},
+        top_k=top_k,
+        min_score=min_score,
+        regions_dir=REGIONS_DIR,
+    )
 
 
 @mcp.tool()

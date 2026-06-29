@@ -1,0 +1,22 @@
+id: planning
+name: Planning Region
+description: Task decomposition, milestones, sequencing, acceptance criteria, and rollback planning.
+triggers:
+  - plan
+  - planning
+  - planner
+  - roadmap
+  - milestone
+  - task
+  - dependency
+  - acceptance criteria
+  - success criteria
+  - rollback
+  - scope
+  - 规划
+  - 计划
+  - 拆分
+  - 里程碑
+  - 任务
+  - 验收
+negative_triggers: []

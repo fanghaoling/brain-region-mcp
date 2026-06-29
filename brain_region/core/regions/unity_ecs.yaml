@@ -1,0 +1,21 @@
+id: unity_ecs
+name: Unity ECS Region
+description: Unity DOTS, Entities, Burst, Job System, Netcode, allocators, and ECS data-oriented architecture.
+triggers:
+  - unity
+  - ecs
+  - dots
+  - entities
+  - burst
+  - jobhandle
+  - job system
+  - allocator
+  - nativearray
+  - componentdata
+  - systembase
+  - isystem
+  - flowfield
+  - netcode
+  - packages manifest
+  - assets
+negative_triggers: []

@@ -1,0 +1,22 @@
+id: security
+name: Security Region
+description: Secrets, authentication, authorization, privacy, injection, and permission boundaries.
+triggers:
+  - security
+  - auth
+  - authentication
+  - authorization
+  - permission
+  - secret
+  - token
+  - api key
+  - password
+  - privacy
+  - injection
+  - sandbox
+  - 安全
+  - 权限
+  - 密钥
+  - 隐私
+  - 注入
+negative_triggers: []

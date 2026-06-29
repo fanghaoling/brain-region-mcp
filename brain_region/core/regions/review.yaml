@@ -1,0 +1,18 @@
+id: review
+name: Review Region
+description: Design, code, document, architecture, and safety review.
+triggers:
+  - review
+  - code review
+  - design review
+  - audit
+  - critique
+  - finding
+  - consensus
+  - risk review
+  - architecture review
+  - 审查
+  - 评审
+  - 复查
+  - 风险
+negative_triggers: []

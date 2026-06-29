@@ -1,0 +1,25 @@
+id: memory
+name: Memory Region
+description: Review memory, advice feedback, knowledge flywheel, decisions, and reusable project experience.
+triggers:
+  - review memory
+  - advice memory
+  - long term memory
+  - knowledge flywheel
+  - knowledge
+  - feedback
+  - accepted
+  - rejected
+  - decision
+  - history
+  - archive
+  - remember
+  - recall
+  - mark_finding
+  - mark_advice
+  - 记忆
+  - 知识
+  - 经验
+  - 反馈
+  - 沉淀
+negative_triggers: []

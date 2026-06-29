@@ -34,6 +34,7 @@ packages = ["brain_region"]
 [tool.hatch.build.targets.wheel.force-include]
 "brain_region/core/reviewers" = "brain_region/core/reviewers"
 "brain_region/core/consultants" = "brain_region/core/consultants"
+"brain_region/core/regions" = "brain_region/core/regions"
 "brain_region/core/schema" = "brain_region/core/schema"
 "brain_region/adapters/unity/reviewers" = "brain_region/adapters/unity/reviewers"
 "brain_region/adapters/unity/knowledge" = "brain_region/adapters/unity/knowledge"
