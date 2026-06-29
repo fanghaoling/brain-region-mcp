@@ -25,6 +25,7 @@ without changing the core pipeline.
 - Render JSON, Markdown, and SARIF output.
 - Track review memory with `mark_finding` so accepted/rejected findings can influence later confidence calibration.
 - Ask external consultant models with `consult_problem` and record useful advice with `mark_advice`.
+- Generate executable task plans with `plan_task`, then review the plan before implementation.
 - Merge defaults from builtin values, global config, project config, environment variables, and explicit call arguments.
 
 ## Architecture
@@ -119,6 +120,45 @@ mark_advice(
 
 `decision` is one of `accepted`, `rejected`, `partial`, or `unknown`. The database stores advice metadata and user
 feedback, not the original prompt, problem text, or full advice body.
+
+## Planning
+
+`plan_task` turns a goal into a structured, reviewable implementation plan. It is intentionally a thin Planner MVP:
+it does not execute commands, does not edit files, and does not run a multi-model debate. It tries the configured model
+panel in order and returns the first parseable plan.
+
+```python
+plan_task(
+    goal="Add a Planner MVP to BrainRegion",
+    context="Python MCP server with existing consult_problem and review_plan tools.",
+    constraints=[
+        "Do not auto-execute tasks.",
+        "Reuse existing budget and input guardrails.",
+    ],
+    success_criteria=[
+        "The MCP tool returns milestones, tasks, risks, acceptance criteria, and tests.",
+        "Unit tests cover parsing and routing.",
+    ],
+)
+```
+
+Recommended flow:
+
+```text
+Goal -> plan_task -> review_plan -> implement -> review_code -> mark_finding / mark_advice
+```
+
+Optional config:
+
+```jsonc
+{
+  "planner_panel": ["modelbridge_openai/gpt-5.4-mini"],
+  "planner_max_cost_usd": 0.03,
+  "planner_max_input_chars": 24000
+}
+```
+
+If `planner_panel` is not configured, planning falls back to `consult_panel`, then `panel`.
 
 ## Knowledge Base
 

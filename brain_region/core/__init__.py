@@ -4,12 +4,16 @@ from __future__ import annotations
 from .document import DocumentType, ReviewDocument
 from .engine import ReviewEngine
 from .pipeline import Pipeline, PipelineContext, Stage
+from .planner import PlanReport, PlanRequest, PlannerEngine
 from .report import CanonicalFinding, Finding, ReviewReport
 
 __all__ = [
     "DocumentType",
     "ReviewDocument",
     "ReviewEngine",
+    "PlanRequest",
+    "PlanReport",
+    "PlannerEngine",
     "Pipeline",
     "PipelineContext",
     "Stage",

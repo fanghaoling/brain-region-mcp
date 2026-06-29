@@ -45,6 +45,7 @@ from .adapters.unity import UnityAdapter  # noqa: E402
 from .core.consult import ConsultEngine, ConsultRequest  # noqa: E402
 from .core.consultants import CONSULTANTS_DIR, list_consultants as _list_consultant_files  # noqa: E402
 from .core.engine import ReviewEngine  # noqa: E402
+from .core.planner import PlanRequest, PlannerEngine  # noqa: E402
 from .core.report import CanonicalFinding, Finding, ReviewReport  # noqa: E402
 from .core.reviewers.loader import list_reviewers as _list_reviewer_files  # noqa: E402
 from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E402
@@ -246,6 +247,12 @@ def _build_consult_engine(dd: dict) -> ConsultEngine:
     return ConsultEngine(backend=backend, consultants_dir=CONSULTANTS_DIR)
 
 
+def _build_planner_engine(dd: dict) -> PlannerEngine:
+    registry = _resolve_endpoints(dd.get("endpoints") or {})
+    backend = LiteLLMBackend(timeout=float(dd.get("timeout", 90)), endpoint_registry=registry)
+    return PlannerEngine(backend=backend)
+
+
 def _resolve_consultants(consultants: list[str] | None, mode: str | None, defaults: dict) -> tuple[list[str], str | None]:
     """Resolve consultant roles. Explicit consultants win; mode picks a preset."""
     effective_mode = mode if mode is not None else defaults.get("consult_mode")
@@ -263,6 +270,17 @@ def _resolve_consult_panel(panel: list[str] | None, defaults: dict) -> tuple[lis
     """Resolve consult panel and track the source for debugging/testing."""
     if panel is not None:
         return panel, "explicit"
+    if defaults.get("consult_panel"):
+        return defaults.get("consult_panel") or [], "consult_panel"
+    return defaults.get("panel") or [], "panel"
+
+
+def _resolve_planner_panel(panel: list[str] | None, defaults: dict) -> tuple[list, str]:
+    """Resolve planner panel without making planning depend on the full review panel by default."""
+    if panel is not None:
+        return panel, "explicit"
+    if defaults.get("planner_panel"):
+        return defaults.get("planner_panel") or [], "planner_panel"
     if defaults.get("consult_panel"):
         return defaults.get("consult_panel") or [], "consult_panel"
     return defaults.get("panel") or [], "panel"
@@ -565,6 +583,64 @@ async def review_code(
         extra_context=extra_context, output_format=output_format,
         effort=effort, max_cost_usd=max_cost_usd,
     )
+
+
+@mcp.tool()
+async def plan_task(
+    goal: str,
+    context: str = "",
+    constraints: list[str] | None = None,
+    success_criteria: list[str] | None = None,
+    existing_plan: str = "",
+    files: dict[str, str] | None = None,
+    panel: list[str] | None = None,
+    effort: str | None = None,
+    max_cost_usd: float | None = None,
+    max_input_chars: int | None = None,
+) -> dict:
+    """把目标拆成可执行、可审查的计划。
+
+    Planner MVP 只返回结构化计划，不执行命令、不修改文件。它优先使用 planner_panel；
+    未配置时回退 consult_panel，再回退 review panel。首版按 panel 顺序尝试模型，
+    取第一个可解析计划作为结果，其余模型只作为失败回退，不做多模型 debate。
+    """
+    dd = _defaults_mod.apply(effort=effort)
+    endpoint_ids = set((dd.get("endpoints") or {}).keys())
+    raw_panel, panel_source = _resolve_planner_panel(panel, dd)
+    panel_used = _normalize_panel(raw_panel, endpoint_ids, dd.get("endpoints"))
+    cost_limit = max_cost_usd if max_cost_usd is not None else dd.get("planner_max_cost_usd")
+    if cost_limit is None:
+        cost_limit = dd.get("consult_max_cost_usd")
+    if cost_limit is None:
+        cost_limit = dd.get("max_cost_usd")
+    input_limit = int(
+        max_input_chars
+        if max_input_chars is not None
+        else dd.get("planner_max_input_chars", dd.get("consult_max_input_chars", 24000))
+    )
+
+    engine = _build_planner_engine(dd)
+    report = await engine.plan(
+        PlanRequest(
+            goal=goal,
+            context=context,
+            constraints=constraints or [],
+            success_criteria=success_criteria or [],
+            existing_plan=existing_plan,
+            files=files or {},
+        ),
+        panel=panel_used,
+        max_input_chars=input_limit,
+        max_cost_usd=cost_limit,
+        effort=dd.get("effort"),
+    )
+    result = report.to_dict()
+    result["routing"] = {
+        "panel_source": panel_source,
+        "resolved_panel": [entry["label"] for entry in panel_used],
+        "strategy": "first_parseable_plan",
+    }
+    return result
 
 
 @mcp.tool()
