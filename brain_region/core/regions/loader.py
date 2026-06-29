@@ -26,6 +26,9 @@ class RegionDefinition:
     description: str = ""
     triggers: list[str] = field(default_factory=list)
     negative_triggers: list[str] = field(default_factory=list)
+    # sentinel_keywords：wake gate 假阴性兜底用（命中但未被 retrieve/escalate → sentinel wake）。
+    # 含中文同义词；无声明时 wake gate 用内置 fallback（仅限已知 region）。见 core/wake/gate.py。
+    sentinel_keywords: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -67,6 +70,7 @@ def load_region(name: str, regions_dir: str | Path = REGIONS_DIR) -> RegionDefin
         description=str(data.get("description") or "").strip(),
         triggers=_as_str_list(data.get("triggers")),
         negative_triggers=_as_str_list(data.get("negative_triggers")),
+        sentinel_keywords=_as_str_list(data.get("sentinel_keywords")),
     )
 
 

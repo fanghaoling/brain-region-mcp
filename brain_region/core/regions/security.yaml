@@ -20,3 +20,18 @@ triggers:
   - 隐私
   - 注入
 negative_triggers: []
+# sentinel_keywords：wake gate 假阴性兜底——命中但 security 未被 retrieve/escalate 时强制 sentinel wake。
+# 故故意比 triggers 更宽（覆盖 triggers 漏掉的风险词/缩写/中文）。见 core/wake/gate.py。
+sentinel_keywords:
+  - sqli
+  - xss
+  - csrf
+  - 越权
+  - privilege
+  - leak
+  - 泄露
+  - 漏洞
+  - vulnerability
+  - exploit
+  - 注入
+  - injection

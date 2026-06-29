@@ -51,6 +51,7 @@ from .core.regions import route_regions as _route_regions  # noqa: E402
 from .core.report import CanonicalFinding, Finding, ReviewReport  # noqa: E402
 from .core.reviewers.loader import list_reviewers as _list_reviewer_files  # noqa: E402
 from .core.workflow import suggest_workflow as _suggest_workflow  # noqa: E402
+from .core.wake import wake_gate as _wake_gate  # noqa: E402
 from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E402
 from .core import ReviewDocument  # noqa: E402
 from .knowledge import YamlKnowledgeProvider  # noqa: E402
@@ -1180,6 +1181,42 @@ def suggest_workflow(
         files=files or {},
         top_k=top_k,
         min_score=min_score,
+        regions_dir=REGIONS_DIR,
+    )
+
+
+@mcp.tool()
+def wake_gate(
+    goal: str = "",
+    problem: str = "",
+    context: str = "",
+    files: dict[str, str] | None = None,
+    escalate_confidence: float = 0.5,
+    shadow_wake_threshold: float | None = None,
+    top_k: int = 3,
+    sentinel: bool = True,
+    shadow_top_n: int = 3,
+    gold_regions: list[str] | None = None,
+) -> dict:
+    """Region-routing wake gate with false-negative defense (read-only sidecar).
+
+    Routes Brain Regions through retrieve -> escalate -> wake, adding sentinel
+    (cross-domain risk keywords) and shadow (near-threshold) fallback wakes to
+    defend against missed wakes. Returns an activation trace, wake_metrics vs
+    optional gold_regions (metrics_status scored/unscored), and suggested
+    actions. Never calls models or downstream tools.
+    """
+    return _wake_gate(
+        goal=goal,
+        problem=problem,
+        context=context,
+        files=files or {},
+        escalate_confidence=escalate_confidence,
+        shadow_wake_threshold=shadow_wake_threshold,
+        top_k=top_k,
+        sentinel=sentinel,
+        shadow_top_n=shadow_top_n,
+        gold_regions=gold_regions,
         regions_dir=REGIONS_DIR,
     )
 
