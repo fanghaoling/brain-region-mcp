@@ -167,62 +167,96 @@ def test_compute_outcome_summary_useful_zero_yields_none():
 
 # ---------- evaluate_gate ----------
 
-def _gate_summary(*, cost_a, cost_b, ur_a, ur_b, n=5, missed_wake_b=0.0,
-                  lat_a=1000.0, lat_b=1200.0, mc_a=0, mc_b=0):
-    return {
-        "per_variant": {
-            "default": {"n": n, "cost_per_useful_advice": cost_a, "useful_advice_rate": ur_a,
-                        "latency_p95_ms": lat_a, "missed_critical_total": mc_a, "missed_wake_rate": 0.0},
-            "routed": {"n": n, "cost_per_useful_advice": cost_b, "useful_advice_rate": ur_b,
-                       "latency_p95_ms": lat_b, "missed_critical_total": mc_b, "missed_wake_rate": missed_wake_b},
-        },
-        "routed_default_overlap_rate": 0.5,
-    }
+def _make_run(n, d_cost, d_useful, r_cost, r_useful, total_advice=5, d_missed=0, r_missed=0, judge_id="j"):
+    """构造 n 个 task 的 default+routed records + 1-judge judgements（每 task 每 variant 一条）。"""
+    records, judgements = [], []
+    for i in range(n):
+        tid = f"t{i}"
+        for variant, cost, useful, missed in (
+            ("default", d_cost, d_useful, d_missed), ("routed", r_cost, r_useful, r_missed)):
+            records.append(OutcomeRecord(
+                run_id="r", task_id=tid, variant=variant,
+                report_summary={"advice_count": total_advice, "failed_count": 0},
+                wake={"strategy": variant, "mapping_source": "routed" if variant == "routed" else "default",
+                      "consultants": [], "woken": [],
+                      "wake_metrics": {"missed": [], "hit": [variant], "false_wake": []},
+                      "shadow_promoted": 0},
+                cost={"inference_usd": cost, "estimated_usd": cost, "total_tokens": 10},
+                latency_ms=100.0))
+            judgements.append(BlindJudgement(
+                run_id="r", task_id=tid, judge_id=judge_id, judge_model="m",
+                rubric_hash="h", variant=variant,
+                scores={"useful": useful, "missed_critical": missed, "overall": 4}))
+    return records, judgements
 
 
-def test_evaluate_gate_go():
-    # B cost 降至 0.5×A，useful 非劣，hard 全过
-    s = _gate_summary(cost_a=0.01, cost_b=0.005, ur_a=0.5, ur_b=0.6, n=5)
-    g = evaluate_gate(s)
-    assert g["decision"] == "GO"
-    assert g["primary"]["cost_ok"] and g["primary"]["useful_ok"]
+def test_gate_go():
+    # n=35（>formal_min_n=30，非 pilot）；routed 便宜一半、useful 非劣、missed 不增 → GO
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-go", calibration_ok=True)
+    assert g["decision"] == "GO", g["reasons"]
 
 
-def test_evaluate_gate_no_go_on_hard_gate():
-    # missed_wake_rate_B 超阈值 → NO_GO（即使 primary 过）
-    s = _gate_summary(cost_a=0.01, cost_b=0.005, ur_a=0.5, ur_b=0.6, missed_wake_b=0.2)
-    g = evaluate_gate(s)
+def test_gate_pilot_prefix():
+    # n=20（<formal_min_n=30）+ GO 信号 → pilot_GO（不宣称可信闸门）
+    recs, jdgs = _make_run(20, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-pilot", calibration_ok=True)
+    assert g["decision"] == "pilot_GO", g["reasons"]
+    assert g["diagnostics"]["pilot"] is True
+
+
+def test_gate_no_go_cost():
+    # routed 更贵 → cost_ratio CI low>0.85 → NO_GO
+    recs, jdgs = _make_run(35, d_cost=0.005, d_useful=2, r_cost=0.01, r_useful=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-nogo", calibration_ok=True)
     assert g["decision"] == "NO_GO"
-    assert any("missed_wake" in r for r in g["reasons"])
+    assert any("cost_ratio" in r for r in g["reasons"])
 
 
-def test_evaluate_gate_no_go_on_primary_both_fail():
-    # B cost 没降 且 useful 退化 → NO_GO
-    s = _gate_summary(cost_a=0.01, cost_b=0.02, ur_a=0.6, ur_b=0.4)
-    g = evaluate_gate(s)
+def test_gate_no_go_useful():
+    # routed useful 更低 → useful_delta CI high<0 → NO_GO（OR 语义，单指标确定失败）
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=4, r_cost=0.005, r_useful=1)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-nogo-u", calibration_ok=True)
     assert g["decision"] == "NO_GO"
+    assert any("useful_delta" in r for r in g["reasons"])
 
 
-def test_evaluate_gate_inconclusive_small_n():
-    s = _gate_summary(cost_a=0.01, cost_b=0.005, ur_a=0.5, ur_b=0.6, n=2)
-    assert evaluate_gate(s)["decision"] == "INCONCLUSIVE"
+def test_gate_no_go_missed_critical():
+    # routed 多漏关键 → missed_critical_delta CI low>0 → NO_GO
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2, d_missed=0, r_missed=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-nogo-mc", calibration_ok=True)
+    assert g["decision"] == "NO_GO"
+    assert any("missed_critical" in r for r in g["reasons"])
 
 
-def test_evaluate_gate_inconclusive_when_cost_ratio_undefined():
-    # 单臂 useful=0 → cost_per_useful None → ratio 无定义
-    s = _gate_summary(cost_a=0.01, cost_b=None, ur_a=0.5, ur_b=0.0)
-    assert evaluate_gate(s)["decision"] == "INCONCLUSIVE"
+def test_gate_inconclusive_small_n():
+    recs, jdgs = _make_run(2, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-small", calibration_ok=True)
+    assert g["decision"] == "INCONCLUSIVE"
 
 
-def test_evaluate_gate_respects_custom_config():
-    s = _gate_summary(cost_a=0.01, cost_b=0.005, ur_a=0.5, ur_b=0.6)
-    # 默认 cost_ratio=0.85：B/A=0.5 达标 → GO
-    assert evaluate_gate(s)["decision"] == "GO"
-    # 更严的 cost_ratio=0.3：B/A=0.5 不达标 → primary cost 失败（useful 仍过，只 fail 一项）
-    # roadmap 语义：primary 两项都不过才 NO_GO；只 fail 一项 → INCONCLUSIVE。关键是 config 生效、不再 GO。
-    g = evaluate_gate(s, GateConfig(cost_ratio=0.3))
-    assert g["decision"] != "GO"
-    assert g["primary"]["cost_ok"] is False
+def test_gate_inconclusive_bootstrap_none():
+    # routed useful=0 everywhere → Σuseful=0 → cost_ratio None → INCONCLUSIVE
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=0)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-none", calibration_ok=True)
+    assert g["decision"] == "INCONCLUSIVE"
+
+
+def test_gate_calibration_required():
+    # 校准 artifact 缺失/未达标 → CALIBRATION_REQUIRED（前置，覆盖一切）
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2)
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="run-nc", calibration_ok=False)
+    assert g["decision"] == "CALIBRATION_REQUIRED"
+
+
+def test_gate_respects_custom_config():
+    # 默认 cost_ratio=0.85：ratio=0.5 → GO；更严 cost_ratio=0.3：CI low=0.5>0.3 → NO_GO
+    recs, jdgs = _make_run(35, d_cost=0.01, d_useful=2, r_cost=0.005, r_useful=2)
+    assert evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="r1",
+                         calibration_ok=True)["decision"] == "GO"
+    g = evaluate_gate(recs, jdgs, DEFAULT_OUTCOME_VARIANTS, run_id="r1",
+                      cfg=GateConfig(cost_ratio=0.3), calibration_ok=True)
+    assert g["decision"] == "NO_GO"
 
 
 # ---------- run_outcome_eval 端到端（mock）----------
@@ -285,7 +319,7 @@ async def test_run_outcome_eval_mock_end_to_end(monkeypatch, tmp_path):
     records, judgements, entry, gate = await run_outcome_eval(
         tasks, DEFAULT_OUTCOME_VARIANTS, judge_entries, dd={},
         rubric_text="", rubric_hash="h", run_id="run-mock",
-        max_cost_usd=0.5,
+        max_cost_usd=0.5, require_calibration=False,
     )
 
     # 每 task × 2 variant = 4 records；每 task × 1 judge × 2 variant = 4 judgements
@@ -304,9 +338,9 @@ async def test_run_outcome_eval_mock_end_to_end(monkeypatch, tmp_path):
         by_task.setdefault(r.task_id, {})[r.variant] = set(r.wake["woken"])
     for tid in by_task:
         assert by_task[tid]["default"] == by_task[tid]["routed"]
-    # gate 结构完整
-    assert gate["decision"] in {"GO", "NO_GO", "INCONCLUSIVE"}
-    assert "primary" in gate and "hard_gates" in gate and gate["reasons"]
+    # gate 结构完整（CI-aware：n=2 → INCONCLUSIVE；有 diagnostics/hard_gates/reasons）
+    assert gate["decision"] in {"GO", "NO_GO", "INCONCLUSIVE", "pilot_GO", "pilot_NO_GO", "CALIBRATION_REQUIRED"}
+    assert "diagnostics" in gate and "hard_gates" in gate and gate["reasons"]
     # entry 入 ledger
     assert entry.run_id == "run-mock" and entry.n_tasks == 2
     assert entry.knowledge_hash == "" and entry.reviewer_hash == ""  # consult 无知识库/reviewer
@@ -336,7 +370,9 @@ async def test_run_outcome_eval_judge_shuffle_is_deterministic(monkeypatch, tmp_
     tasks = [EvalTask(id="oc-det", task_type="consult", input={"problem": "flaky race condition bug"},
                       gold_regions=["debugging"])]
     je = [{"label": "j", "model": "fake-judge", "endpoint_id": None}]
-    await run_outcome_eval(tasks, DEFAULT_OUTCOME_VARIANTS, je, {}, "", "h", "run-1", max_cost_usd=0.5)
-    await run_outcome_eval(tasks, DEFAULT_OUTCOME_VARIANTS, je, {}, "", "h", "run-2", max_cost_usd=0.5)
+    await run_outcome_eval(tasks, DEFAULT_OUTCOME_VARIANTS, je, {}, "", "h", "run-1", max_cost_usd=0.5,
+                           require_calibration=False)
+    await run_outcome_eval(tasks, DEFAULT_OUTCOME_VARIANTS, je, {}, "", "h", "run-2", max_cost_usd=0.5,
+                           require_calibration=False)
     # 两次的 judge user prompt（含打乱后的标签顺序）应完全一致
     assert calls[0] == calls[1]

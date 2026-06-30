@@ -1,12 +1,15 @@
 """Outcome eval：wake_gate 的 woken 真正驱动 consult 选 consultants，盲评 judge 量建议质量，
-A(default 静态默认面板) vs B(routed wake 派生) 对照 cost_per_useful_advice（roadmap §8 v5.5 闸门主指标）。
+A(default) vs B(routed) 对照 cost_per_useful_advice（roadmap §8 v5.5 闸门主指标）。
 
-level-1（LM-judge）。level-2 沙盒程序验收（eval_harness §10）不做——这里只做"judge 觉得建议好不好"
-的近似；客观终极裁判留 level-2。eval-only：harness 内部建 consult 引擎 + 应用 woken→consultants，
-**不改生产 server.consult_problem**（隔离，与现有 eval 一致；GO 后再谈接生产）。
+level-1（LM-judge）。level-2 沙盒不做。eval-only：harness 内部建 consult 引擎 + 应用 woken→consultants，
+**不改生产 server.consult_problem**。
 
-复用（不重造）：wake_gate（core/wake/gate.py，免费、不调模型）/ ConsultEngine.consult /
-aggregate_variant_stats（runner.py 共享统计）/ judge 盲评骨架（judge.judge_task_advice）/ store ledger。
+CI-aware gate（吸收 3 轮对抗评审）：advice 校准前提（CALIBRATION_REQUIRED）+ 估计量层 bootstrap CI
+（重采 task、重算聚合 ratio/delta，非 per-task ratio）+ OR 语义（任一 primary 整段 CI 确定失败即 NO_GO）+
+pilot 标记（n<formal_min_n）+ 丰富 diagnostics（CI/quantiles/effective_rate/per-judge/consultant trace）。
+
+复用：wake_gate（免费）/ ConsultEngine.consult / aggregate_variant_stats（点估计）/ judge_task_advice /
+store ledger（含 eval_calibrations）。
 """
 from __future__ import annotations
 
@@ -29,10 +32,17 @@ from ..server import (
     _resolve_endpoints,
 )
 from . import store
-from .judge import judge_task_advice
+from .judge import advice_prompt_skeleton_hash, judge_task_advice
 from .metadata import defaults_hash, git_sha
 from .runner import aggregate_variant_stats
 from .schema import EvalCaseRecord, EvalLedgerEntry
+from .stats import (
+    bootstrap_statistic,
+    cost_ratio_stat,
+    missed_critical_delta_stat,
+    seed_for,
+    useful_delta_stat,
+)
 
 logger = logging.getLogger("brainregion.eval.outcome")
 
@@ -58,11 +68,8 @@ Strategy = Literal["default", "routed", "wake_all"]
 
 
 def consultants_for_regions(woken: list[str]) -> list[str]:
-    """woken region 并集 → consultants（纯映射，去重保序）。
-
-    无 specialist 的 region 贡献空；并集为空时返回 []。**不掺 fallback**——映射职责与回退策略分离
-    （回退随 variant strategy 变，放 _resolve_variant_consultants）。
-    """
+    """woken region 并集 → consultants（纯映射，去重保序）。无 specialist 的 region 贡献空；
+    并集为空返回 []。不掺 fallback（回退策略随 variant strategy 变，放 _resolve_variant_consultants）。"""
     out: list[str] = []
     for rid in woken or []:
         for c in REGION_CONSULTANTS.get(rid, []):
@@ -83,7 +90,7 @@ def _resolve_variant_consultants(
         if mapped:
             return mapped, "routed"
         return defaults, "fallback"
-    raise NotImplementedError("wake_all strategy 预留（roadmap §2，missed-wake ground truth）；follow-up")
+    raise NotImplementedError("wake_all strategy 预留（roadmap §2）；follow-up")
 
 
 @dataclass
@@ -102,23 +109,25 @@ DEFAULT_OUTCOME_VARIANTS = [
 class GateConfig:
     """闸门阈值（默认对齐 eval_harness §6）。集中于此——实验/CI/论文改阈值不动代码。"""
 
-    cost_ratio: float = 0.85              # primary: cost_per_useful_advice_B/A ≤ 此值
-    missed_wake_rate_max: float = 0.10    # hard: missed_wake_rate_B ≤ 此值
-    latency_p95_floor_ms: float = 6000.0  # hard: latency_p95_B 的绝对下限
-    latency_ratio_max: float = 1.5        # hard: latency_p95_B ≤ max(ratio×A, floor)
+    cost_ratio: float = 0.85              # primary: cost_ratio CI high ≤ 此值（整段满足降本）
+    missed_wake_rate_max: float = 0.10    # hard: missed_wake_rate ≤ 此值（路由层，点估计）
+    latency_p95_floor_ms: float = 6000.0  # hard: latency_p95 的绝对下限
+    latency_ratio_max: float = 1.5        # hard: latency_p95 ≤ max(ratio×A, floor)
     min_tasks: int = 4                    # 低于此 → INCONCLUSIVE（样本不足）
+    formal_min_n: int = 30                # 低于此 → pilot_ 前缀（不宣称"可信闸门"）
+    confidence: float = 0.95              # CI 置信水平
 
 
 @dataclass
 class OutcomeRecord:
-    """单任务 × 单变体 的 consult 产出。独立 dataclass（不 mimic EvalCaseRecord），
-    字段按职责命名；喂 store 时走 to_case_record() 薄 adapter。"""
+    """单任务 × 单变体 的 consult 产出。独立 dataclass（不 mimic EvalCaseRecord），字段按职责命名；
+    喂 store 时走 to_case_record() 薄 adapter。"""
 
     run_id: str
     task_id: str
     variant: str
     report_summary: dict = field(default_factory=dict)  # consult 产出：advice_count/failed_count
-    wake: dict = field(default_factory=dict)            # strategy/mapping_source/consultants/woken/wake_metrics/shadow_promoted
+    wake: dict = field(default_factory=dict)            # strategy/mapping_source/consultant trace/woken/wake_metrics
     cost: dict = field(default_factory=dict)            # {inference_usd, estimated_usd, total_tokens}
     latency_ms: float = 0.0
     outputs_json: str = ""
@@ -188,6 +197,21 @@ def _run_wake_once(task, regions_dir) -> dict:
     }
 
 
+def _consultant_trace(consultants: list[str], report: ConsultReport) -> dict:
+    """planned→returned→failed→dropped_by_budget 链路（全从 report 推导，无需改 engine）。
+    一眼 debug"为什么没叫 architect"：wake 没醒 / budget 裁 / 执行超时。"""
+    planned = set(consultants)
+    returned = {a.consultant for a in (report.individual or []) if getattr(a, "consultant", None)}
+    failed = {fm.get("consultant") for fm in (report.failed_models or []) if fm.get("consultant")}
+    dropped = planned - returned - failed
+    return {
+        "planned": sorted(planned),
+        "returned": sorted(returned),
+        "failed": sorted(failed),
+        "dropped_by_budget": sorted(dropped),
+    }
+
+
 async def run_outcome_variant(
     engine, request: ConsultRequest, panel: list, consultants: list[str],
     variant: OutcomeVariant, mapping_source: MappingSource, shared_wake: dict,
@@ -208,6 +232,7 @@ async def run_outcome_variant(
             max_cost_usd=max_cost_usd, effort=effort,
         )
         dt = (time.perf_counter() - t0) * 1000.0
+        wake_info["consultant_trace"] = _consultant_trace(consultants, report)
         return OutcomeRecord(
             run_id=run_id, task_id=task_id, variant=variant.name,
             report_summary={
@@ -253,16 +278,15 @@ def _routed_default_overlap(records: list, variants: list[OutcomeVariant]) -> fl
 
 
 def compute_outcome_summary(records: list, judgements: list, variants: list[OutcomeVariant]) -> dict:
+    """点估计 per_variant（用于展示）+ wake_stats + missed/false_wake。CI 在 evaluate_gate 单独算。"""
     per_variant: dict[str, dict] = {}
     for v in variants:
         recs = [r for r in records if r.variant == v.name]
         jdgs = [j for j in judgements if j.variant == v.name]
         stats = aggregate_variant_stats(recs, jdgs)
-        # missed_critical 计数（judge 强项；不进 aggregate_variant_stats 以免改 review 输出）
         stats["missed_critical_total"] = sum(
             int((j.scores or {}).get("missed_critical", 0) or 0) for j in jdgs
         )
-        # wake 诊断（采纳外部建议：主指标外的诊断量 + 监控 B 是否退化）
         woken_counts = [len((r.wake or {}).get("woken") or []) for r in recs]
         expert_counts = [len((r.wake or {}).get("consultants") or []) for r in recs]
         shadow_total = sum(int((r.wake or {}).get("shadow_promoted") or 0) for r in recs)
@@ -275,7 +299,6 @@ def compute_outcome_summary(records: list, judgements: list, variants: list[Outc
             "fallback_rate": round(fallback_n / len(sources), 3) if sources else 0.0,
             "mapping_source_breakdown": {str(s): sources.count(s) for s in sorted(set(sources))},
         }
-        # missed_wake_rate / false_wake_rate：路由层指标，A/B 同一 wake_gate 输出（每 task 算一次）
         missed_rates, false_rates = [], []
         for r in recs:
             wm = (r.wake or {}).get("wake_metrics") or {}
@@ -283,7 +306,7 @@ def compute_outcome_summary(records: list, judgements: list, variants: list[Outc
             hit = wm.get("hit") or []
             false_wake = wm.get("false_wake") or []
             woken = (r.wake or {}).get("woken") or []
-            gold_total = len(set(missed) | set(hit))  # hit/missed 互斥且并集=gold（wake_gate 对 gold 的集合运算）
+            gold_total = len(set(missed) | set(hit))
             if gold_total:
                 missed_rates.append(len(missed) / gold_total)
             if woken:
@@ -298,7 +321,7 @@ def compute_outcome_summary(records: list, judgements: list, variants: list[Outc
 
 
 def outcome_sanity(records: list, judgements: list, variants: list[OutcomeVariant]) -> dict:
-    """errors=结构性失败；warnings=观察（cost None / 盲评解析失败 / B≡A 无信号）。"""
+    """errors=结构性失败；warnings=观察（cost None / 运行失败 / 盲评解析失败）。"""
     errors: list[str] = []
     warnings: list[str] = []
     for r in records:
@@ -314,106 +337,220 @@ def outcome_sanity(records: list, judgements: list, variants: list[OutcomeVarian
     return {"errors": errors, "warnings": warnings}
 
 
-def evaluate_gate(summary: dict, cfg: GateConfig | None = None) -> dict:
-    """A(default) vs B(routed) 对照，对齐 eval_harness §6。返回 decision/primary/hard_gates/reasons/diagnostics。
+def _per_judge_metrics(judgements: list, control: str, treatment: str) -> dict:
+    """per-judge useful/missed_critical 的 mean/std/min/max（吸收 Rec 2：judge 分歧诊断）。
+    返回 {judge_id: {metric: {mean,std,min,max,n}}}。"""
+    by: dict[str, dict[str, list[float]]] = {}
+    for j in judgements:
+        for m in ("useful", "missed_critical"):
+            v = float((j.scores or {}).get(m, 0) or 0)
+            by.setdefault(j.judge_id, {}).setdefault(m, []).append(v)
+    out = {}
+    for jid, metrics in by.items():
+        out[jid] = {}
+        for m, vals in metrics.items():
+            out[jid][m] = {
+                "mean": round(statistics.mean(vals), 3) if vals else 0.0,
+                "std": round(statistics.pstdev(vals), 3) if len(vals) > 1 else 0.0,
+                "min": min(vals) if vals else 0.0,
+                "max": max(vals) if vals else 0.0,
+                "n": len(vals),
+            }
+    return out
 
-    GO = primary + hard_gates 全过；NO_GO = 任一 hard_gate 破 或 primary 两项都不过；
-    INCONCLUSIVE = 其余（n<min_tasks / 单臂 useful=0 使 cost ratio 无定义 / primary 只过一项）。
-    不凭空造置信度小数——真 CI 需 bootstrap（ISS-008 样本量线，follow-up）。
+
+def per_task_metrics(records: list, judgements: list, control: str = "default",
+                     treatment: str = "routed") -> tuple[list, dict]:
+    """records/judgements → (task_rows, meta)。
+
+    task_rows: [{control: {cost, useful, total_advice, missed_critical}, treatment: {...}}, ...]
+    ——按 variant_name 键控（不写死，吸收 GPT：未来多变体不用改 stats）。useful/missed_critical 跨 judge
+    **取 mean**（多 judge 测同一 advice，求和不该被 judge 数放大）；cost/total_advice 单值。
+    meta: {effective_n, dropped_task_ids, missing}。仅两 variant 都在且有 judgement 的 task 入列。
+    """
+    rec_by = {(r.task_id, r.variant): r for r in records}
+    jdg_by: dict[tuple, list] = {}
+    for j in judgements:
+        jdg_by.setdefault((j.task_id, j.variant), []).append(j)
+    task_ids = sorted({tid for (tid, _v) in rec_by} | {tid for (tid, _v) in jdg_by})
+
+    def _mean(jdgs, key):
+        vals = [float((j.scores or {}).get(key, 0) or 0) for j in jdgs]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    rows: list[dict] = []
+    dropped: list[str] = []
+    for tid in task_ids:
+        rec_c, rec_t = rec_by.get((tid, control)), rec_by.get((tid, treatment))
+        jdgs_c, jdgs_t = jdg_by.get((tid, control), []), jdg_by.get((tid, treatment), [])
+        if not rec_c or not rec_t or not jdgs_c or not jdgs_t:
+            dropped.append(tid)
+            continue
+        rows.append({
+            control: {"cost": float((rec_c.cost or {}).get("inference_usd") or 0),
+                      "useful": _mean(jdgs_c, "useful"),
+                      "total_advice": float((rec_c.report_summary or {}).get("advice_count") or 0),
+                      "missed_critical": _mean(jdgs_c, "missed_critical")},
+            treatment: {"cost": float((rec_t.cost or {}).get("inference_usd") or 0),
+                        "useful": _mean(jdgs_t, "useful"),
+                        "total_advice": float((rec_t.report_summary or {}).get("advice_count") or 0),
+                        "missed_critical": _mean(jdgs_t, "missed_critical")},
+        })
+    return rows, {"effective_n": len(rows), "dropped_task_ids": dropped,
+                  "missing": [t for t in task_ids if t not in dropped]}
+
+
+def _boot_ci(rows, run_id, control, treatment, confidence):
+    """三个估计量的 bootstrap CI（每 metric 独立 seed 流）。"""
+    return {
+        "cost_ratio": bootstrap_statistic(
+            rows, lambda rs: cost_ratio_stat(rs, control, treatment),
+            confidence=confidence, seed=seed_for(run_id, "cost_ratio")),
+        "useful_delta": bootstrap_statistic(
+            rows, lambda rs: useful_delta_stat(rs, control, treatment),
+            confidence=confidence, seed=seed_for(run_id, "useful_delta")),
+        "missed_critical_delta": bootstrap_statistic(
+            rows, lambda rs: missed_critical_delta_stat(rs, control, treatment),
+            confidence=confidence, seed=seed_for(run_id, "missed_critical_delta")),
+    }
+
+
+def evaluate_gate(
+    records: list, judgements: list, variants: list[OutcomeVariant], *,
+    run_id: str, cfg: GateConfig | None = None,
+    control: str = "default", treatment: str = "routed",
+    calibration_ok: bool = True, confidence: float = 0.95,
+) -> dict:
+    """CI-aware gate（吸收 3 轮评审）。决策 ∈ {GO, NO_GO, INCONCLUSIVE, CALIBRATION_REQUIRED, pilot_*}。
+
+    - GO：hard gates 全过 且三 primary（cost_ratio / useful_delta / missed_critical_delta）整段 CI 满足。
+    - NO_GO（OR 语义）：任一 primary 整段 CI 确定失败（cost_ratio CI low>thr / useful CI high<0 /
+      missed_critical CI low>0）或 hard gate 破。
+    - INCONCLUSIVE：CI 跨阈值 / n<min / bootstrap None。
+    - CALIBRATION_REQUIRED：校准 artifact 缺失/未达标（前置）。
+    - pilot_ 前缀：n<formal_min_n（不宣称"可信闸门"）。
     """
     cfg = cfg or GateConfig()
-    pv = summary.get("per_variant", {})
-    d = pv.get("default") or {}
-    r = pv.get("routed") or {}
-    n = int(r.get("n", 0))
+    rows, meta = per_task_metrics(records, judgements, control, treatment)
+    n = meta["effective_n"]
+    boot = _boot_ci(rows, run_id, control, treatment, confidence)
+    cr, ud, md = boot["cost_ratio"], boot["useful_delta"], boot["missed_critical_delta"]
 
-    cost_a = d.get("cost_per_useful_advice")
-    cost_b = r.get("cost_per_useful_advice")
-    cost_ratio = (cost_b / cost_a) if (cost_a and cost_b) else None
-    useful_rate_a = float(d.get("useful_advice_rate") or 0.0)
-    useful_rate_b = float(r.get("useful_advice_rate") or 0.0)
-    cost_ok = cost_ratio is not None and cost_ratio <= cfg.cost_ratio
-    useful_ok = useful_rate_b >= useful_rate_a - 1e-9
-    primary = {
-        "cost_ratio": round(cost_ratio, 4) if cost_ratio is not None else None,
-        "cost_ok": cost_ok,
-        "useful_rate_delta": round(useful_rate_b - useful_rate_a, 3),
-        "useful_ok": useful_ok,
-    }
-
-    missed_wake_b = float(r.get("missed_wake_rate") or 0.0)
-    lat_a = float(d.get("latency_p95_ms") or 0.0)
-    lat_b = float(r.get("latency_p95_ms") or 0.0)
+    # hard gates（路由层 missed_wake + latency，点估计；从 records 取 treatment 侧）
+    treat_recs = [r for r in records if r.variant == treatment]
+    control_recs = [r for r in records if r.variant == control]
+    missed_rates = []
+    for r in treat_recs:
+        wm = (r.wake or {}).get("wake_metrics") or {}
+        gold = len(set(wm.get("missed") or []) | set(wm.get("hit") or []))
+        if gold:
+            missed_rates.append(len(wm.get("missed") or []) / gold)
+    missed_wake_b = statistics.mean(missed_rates) if missed_rates else 0.0
+    lat_a_vals = [float(r.latency_ms or 0) for r in control_recs]
+    lat_b_vals = [float(r.latency_ms or 0) for r in treat_recs]
+    lat_a = _pctl(lat_a_vals, 0.95)
+    lat_b = _pctl(lat_b_vals, 0.95)
     lat_limit = max(cfg.latency_ratio_max * lat_a, cfg.latency_p95_floor_ms)
-    missed_crit_delta = int(r.get("missed_critical_total") or 0) - int(d.get("missed_critical_total") or 0)
     hard = {
-        "missed_wake_rate_B": missed_wake_b,
+        "missed_wake_rate_B": round(missed_wake_b, 3),
         "missed_wake_ok": missed_wake_b <= cfg.missed_wake_rate_max,
-        "latency_p95_B": lat_b,
+        "latency_p95_B": round(lat_b, 1),
         "latency_limit": round(lat_limit, 1),
         "latency_ok": lat_b <= lat_limit,
-        "missed_critical_delta": missed_crit_delta,
-        "missed_critical_ok": missed_crit_delta <= 0,
     }
-
-    hard_all_ok = all(v for k, v in hard.items() if k.endswith("_ok"))
-    primary_ok = cost_ok and useful_ok
-    primary_both_fail = (not cost_ok) and (not useful_ok)
-
-    if n < cfg.min_tasks or cost_ratio is None:
-        decision = "INCONCLUSIVE"
-    elif (not hard_all_ok) or primary_both_fail:
-        decision = "NO_GO"
-    elif primary_ok:
-        decision = "GO"
-    else:
-        decision = "INCONCLUSIVE"
+    hard_all_ok = hard["missed_wake_ok"] and hard["latency_ok"]
 
     reasons: list[str] = []
-    if n < cfg.min_tasks:
-        reasons.append(f"样本不足 n={n} < min_tasks={cfg.min_tasks}")
-    if cost_ratio is None:
-        reasons.append("cost_per_useful_advice 无定义（某臂 useful=0）→ cost ratio 不可比")
-    if cost_ratio is not None and not cost_ok:
-        reasons.append(f"B 成本未降至 {cfg.cost_ratio}×A（cost_ratio={cost_ratio:.4f}）")
-    if not useful_ok:
-        reasons.append(f"B useful_rate 未非劣（Δ={useful_rate_b - useful_rate_a:+.3f}）")
-    if not hard["missed_wake_ok"]:
-        reasons.append(f"missed_wake_rate_B={missed_wake_b:.3f} > {cfg.missed_wake_rate_max}（路由漏唤醒）")
-    if not hard["latency_ok"]:
-        reasons.append(f"latency_p95_B={lat_b}ms > limit {lat_limit:.1f}ms")
-    if not hard["missed_critical_ok"]:
-        reasons.append(f"B 新增关键漏建议 missed_critical_delta={missed_crit_delta}")
-    if decision == "GO":
-        reasons.append("primary 满足 且 hard_gates 全过")
+    pilot = n < cfg.formal_min_n
+
+    if not calibration_ok:
+        decision = "CALIBRATION_REQUIRED"
+        reasons.append("advice judge 校准 artifact 缺失/未达标/不匹配 → 先 `brain-region calibrate --advice`")
+    else:
+        any_none = any(b["point"] is None for b in boot.values())
+        cost_ok = cr["point"] is not None and cr["high"] is not None and cr["high"] <= cfg.cost_ratio
+        useful_ok = ud["point"] is not None and ud["low"] is not None and ud["low"] >= 0
+        missed_ok = md["point"] is not None and md["high"] is not None and md["high"] <= 0
+        cost_fail = cr["low"] is not None and cr["low"] > cfg.cost_ratio
+        useful_fail = ud["high"] is not None and ud["high"] < 0
+        missed_fail = md["low"] is not None and md["low"] > 0
+
+        if not hard_all_ok:
+            decision = "NO_GO"
+            if not hard["missed_wake_ok"]:
+                reasons.append(f"hard: missed_wake_rate_B={missed_wake_b:.3f} > {cfg.missed_wake_rate_max}")
+            if not hard["latency_ok"]:
+                reasons.append(f"hard: latency_p95_B={lat_b:.1f}ms > limit {lat_limit:.1f}ms")
+        elif any_none or n < cfg.min_tasks:
+            decision = "INCONCLUSIVE"
+            if any_none:
+                reasons.append("某 primary bootstrap 点估计 None（Σuseful=0 / Σtotal=0）")
+            if n < cfg.min_tasks:
+                reasons.append(f"有效配对 n={n} < min_tasks={cfg.min_tasks}")
+        elif cost_fail or useful_fail or missed_fail:
+            decision = "NO_GO"
+            if cost_fail:
+                reasons.append(f"cost_ratio CI low={cr['low']:.4f} > {cfg.cost_ratio}（整段确定没降本）")
+            if useful_fail:
+                reasons.append(f"useful_delta CI high={ud['high']:.4f} < 0（整段确定劣化）")
+            if missed_fail:
+                reasons.append(f"missed_critical_delta CI low={md['low']:.4f} > 0（整段确定多漏关键）")
+        elif cost_ok and useful_ok and missed_ok:
+            decision = "GO"
+            reasons.append("三 primary 整段 CI 满足（cost 降 / useful 非劣 / missed_critical 不增）且 hard gates 过")
+        else:
+            decision = "INCONCLUSIVE"
+            reasons.append("某 primary CI 跨阈值（无法确定满足或失败）")
+
+        if pilot and decision in {"GO", "NO_GO"}:
+            decision = f"pilot_{decision}"
+            reasons.append(f"pilot：有效 n={n} < formal_min_n={cfg.formal_min_n}，仅 pilot 级（不宣称可信闸门）")
 
     diagnostics = {
-        "n": n,
-        "cost_ratio": primary["cost_ratio"],
-        "useful_rate_delta": primary["useful_rate_delta"],
-        "primary_margin": round(cfg.cost_ratio - (cost_ratio or 0), 4) if cost_ratio is not None else None,
-        "routed_default_overlap_rate": summary.get("routed_default_overlap_rate"),
+        "effective_n": n,
+        "dropped_task_ids": meta["dropped_task_ids"],
+        "B": next((b["B"] for b in boot.values() if b["B"]), 0),
+        "confidence": confidence,
+        "pilot": pilot,
+        "cost_ratio_ci": {k: boot["cost_ratio"][k] for k in ("point", "low", "high", "effective_rate")},
+        "useful_delta_ci": {k: boot["useful_delta"][k] for k in ("point", "low", "high", "effective_rate")},
+        "missed_critical_delta_ci": {k: boot["missed_critical_delta"][k] for k in ("point", "low", "high", "effective_rate")},
+        "bootstrap_quantiles": {m: boot[m]["quantiles"] for m in boot},
+        "per_judge_metrics": _per_judge_metrics(judgements, control, treatment),
+        "routed_default_overlap_rate": _routed_default_overlap(records, variants),
     }
-    return {
-        "decision": decision,
-        "primary": primary,
-        "hard_gates": hard,
-        "reasons": reasons,
-        "diagnostics": diagnostics,
-    }
+    return {"decision": decision, "hard_gates": hard, "reasons": reasons, "diagnostics": diagnostics}
+
+
+def _pctl(values: list[float], p: float) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    k = max(0, min(len(s) - 1, int(round(p * (len(s) - 1)))))
+    return s[k]
+
+
+def _calibration_ok(judge_entries: list[dict], rubric_hash: str, prompt_hash: str, gold_version: str) -> bool:
+    """所有 judge 都有匹配的 pass 校准 artifact 吗？（outcome gate 前置，吸收 I6/Blocker 3）"""
+    for je in judge_entries or []:
+        rec = store.lookup_calibration(je.get("label", ""), je.get("model", ""),
+                                       rubric_hash, prompt_hash, gold_version)
+        if not rec or not rec.get("passed"):
+            return False
+    return True
 
 
 async def run_outcome_eval(
     tasks: list, variants: list[OutcomeVariant], judge_entries: list[dict],
     dd: dict, rubric_text: str, rubric_hash: str, run_id: str,
     effort=None, max_cost_usd: float = 1.0, panel_override: list | None = None,
-    *, regions_dir=REGIONS_DIR,
+    *, regions_dir=REGIONS_DIR, gold_version: str = "", require_calibration: bool = True,
 ) -> tuple[list, list, EvalLedgerEntry, dict]:
-    """主编排（仿 runner.run_eval，但量 consult 而非 review）。
+    """主编排（仿 runner.run_eval，但量 consult 而非 review）+ CI-aware gate。
 
-    每 task：wake_gate 跑一次（所有 variant 共用）→ 每 variant 解析 consultants（纯 dict）+
-    run_outcome_variant + record_case → 每 judge judge_task_advice 盲评 + record_judgement →
-    compute_outcome_summary → evaluate_gate → record_run。
+    每 task：wake_gate 跑一次（所有 variant 共用）→ 每 variant 解析 consultants + run_outcome_variant +
+    record_case → 每 judge judge_task_advice 盲评 + record_judgement → compute_outcome_summary +
+    CI-aware evaluate_gate（前置校准校验）→ record_run。
     """
     engine, backend = build_outcome_engines(dd)
     endpoint_ids = set((_resolve_endpoints(dd.get("endpoints") or {}) or {}).keys())
@@ -449,7 +586,14 @@ async def run_outcome_eval(
 
     summary = compute_outcome_summary(records, judgements, variants)
     summary["sanity"] = outcome_sanity(records, judgements, variants)
-    gate = evaluate_gate(summary)
+
+    prompt_hash = advice_prompt_skeleton_hash(rubric_text)
+    calib_ok = (not require_calibration) or _calibration_ok(
+        judge_entries, rubric_hash, prompt_hash, gold_version)
+    gate = evaluate_gate(
+        records, judgements, variants, run_id=run_id,
+        calibration_ok=calib_ok, confidence=GateConfig().confidence,
+    )
     summary["gate"] = gate
 
     entry = EvalLedgerEntry(

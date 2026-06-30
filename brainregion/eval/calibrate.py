@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from .judge import judge_task
+from .judge import judge_task, judge_task_advice
 
 logger = logging.getLogger("brainregion.eval.calibrate")
 
@@ -116,4 +116,128 @@ def summarize(rows: list[dict], threshold: float = 0.7) -> dict:
         "per_failure_mode": {k: round(v["agreed"] / v["n"], 3) for k, v in by_fm.items() if v["n"]},
         "per_metric": {k: round(v["agreed"] / v["n"], 3) for k, v in by_metric.items() if v["n"]},
         "wrong_pairs": wrong,
+    }
+
+
+# ===== advice judge 校准（outcome eval 用）=====
+
+
+def load_gold_advice(path: str) -> list[dict]:
+    """advice gold YAML → [{id, failure_mode, task, good_advice(dict), bad_advice(dict), note}]。
+
+    good/bad 是 ConsultReport 聚合层 advice dict（summary/likely_causes/...），不是 finding 列表。
+    """
+    p = Path(path)
+    files = [p] if p.is_file() else sorted(p.glob("*.yaml"))
+    pairs: list[dict] = []
+    for fp in files:
+        data = yaml.safe_load(fp.read_text(encoding="utf-8"))
+        for item in (data if isinstance(data, list) else [data]):
+            if not isinstance(item, dict):
+                continue
+            pairs.append({
+                "id": item.get("id", fp.stem),
+                "failure_mode": item.get("failure_mode", ""),
+                "task": item.get("task", ""),
+                "good_advice": item.get("good") or {},
+                "bad_advice": item.get("bad") or {},
+                "note": item.get("note", ""),
+            })
+    return pairs
+
+
+async def calibrate_advice(
+    gold_pairs: list[dict], backend, judge_entries: list[dict],
+    rubric_text: str, rubric_hash: str, run_id: str,
+    metrics: tuple = ("useful", "overall"),
+    penalty_metrics: tuple = ("missed_critical", "harmful"),
+) -> list[dict]:
+    """对每对 advice gold 跑 judge_task_advice，返回每 (pair×judge×metric) 一行。
+
+    - metrics (useful/overall)：higher_better，agreement = good>bad。
+    - penalty_metrics (missed_critical/harmful)：lower_better，good<bad 算 correct（diagnostic，不入主 agreement）。
+    tie (good==bad) 单列标记（吸收 C3）。
+    """
+    rows: list[dict] = []
+    for pair in gold_pairs:
+        variant_outputs = {
+            "good": json.dumps(pair["good_advice"], ensure_ascii=False),
+            "bad": json.dumps(pair["bad_advice"], ensure_ascii=False),
+        }
+        for je in judge_entries:
+            try:
+                jds = await judge_task_advice(
+                    backend, je, rubric_text, rubric_hash, run_id, pair["id"],
+                    variant_outputs, task_context=pair["task"],
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("calibrate_advice judge 失败 pair=%s: %s", pair["id"], e)
+                continue
+            by_v = {j.variant: j for j in jds}
+            gj, bj = by_v.get("good"), by_v.get("bad")
+            for m in metrics:  # higher_better
+                gv = float((gj.scores or {}).get(m, 0) or 0) if gj else 0.0
+                bv = float((bj.scores or {}).get(m, 0) or 0) if bj else 0.0
+                rows.append({"pair": pair["id"], "failure_mode": pair["failure_mode"],
+                             "judge": je["label"], "metric": m, "good": gv, "bad": bv,
+                             "direction": "higher_better", "agreed": gv > bv, "tied": gv == bv, "note": pair["note"]})
+            for m in penalty_metrics:  # lower_better
+                gv = float((gj.scores or {}).get(m, 0) or 0) if gj else 0.0
+                bv = float((bj.scores or {}).get(m, 0) or 0) if bj else 0.0
+                rows.append({"pair": pair["id"], "failure_mode": pair["failure_mode"],
+                             "judge": je["label"], "metric": m, "good": gv, "bad": bv,
+                             "direction": "lower_better", "agreed": gv < bv, "tied": gv == bv, "note": pair["note"]})
+    return rows
+
+
+def summarize_advice(rows: list[dict], threshold: float = 0.7, confidence: float = 0.95) -> dict:
+    """advice 校准汇总：agreement 只算 higher_better metrics（useful/overall），tie 单列；Wilson 下界过门槛
+    才 calibrated（吸收 I4：n=10 是 smoke，下界<门槛→不硬放行）。penalty metrics 作 diagnostic。"""
+    from .stats import wilson_lower
+
+    agree_rows = [r for r in rows if r["direction"] == "higher_better"]
+    penalty_rows = [r for r in rows if r["direction"] == "lower_better"]
+    non_tie = [r for r in agree_rows if not r["tied"]]
+    agreed = sum(1 for r in non_tie if r["agreed"])
+    total = len(non_tie)
+    rate = agreed / total if total else 0.0
+    ties = sum(1 for r in agree_rows if r["tied"])
+
+    by_metric: dict[str, dict] = {}
+    for r in agree_rows:
+        b = by_metric.setdefault(r["metric"], {"n": 0, "agreed": 0, "tied": 0})
+        b["n"] += 1
+        if r["tied"]:
+            b["tied"] += 1
+        elif r["agreed"]:
+            b["agreed"] += 1
+    penalty_by_metric: dict[str, dict] = {}
+    for r in penalty_rows:
+        b = penalty_by_metric.setdefault(r["metric"], {"n": 0, "correct": 0})
+        b["n"] += 1
+        b["correct"] += 1 if r["agreed"] else 0  # good<bad = correct direction
+
+    wilson = wilson_lower(agreed, total, confidence)
+    wrong = [f"{r['pair']}({r['metric']}, good={r['good']} bad={r['bad']})"
+             for r in non_tie if not r["agreed"]]
+    return {
+        "agreement_rate": round(rate, 3),
+        "agreed": agreed,
+        "total": total,
+        "tie_rate": round(ties / len(agree_rows), 3) if agree_rows else 0.0,
+        "wilson_lower": round(wilson, 3),
+        "calibrated": wilson >= threshold,  # 下界过门槛（吸收 I4：小样本不硬放行）
+        "threshold": threshold,
+        "confidence": confidence,
+        "per_metric": {
+            k: {"agreement": round(v["agreed"] / max(1, v["n"] - v["tied"]), 3) if (v["n"] - v["tied"]) else 0.0,
+                "tie_rate": round(v["tied"] / v["n"], 3) if v["n"] else 0.0}
+            for k, v in by_metric.items()
+        },
+        "penalty_metrics": {
+            k: {"correct_direction_rate": round(v["correct"] / v["n"], 3) if v["n"] else 0.0}
+            for k, v in penalty_by_metric.items()
+        },
+        "wrong_pairs": wrong,
+        "note": "n=10 是 smoke；Wilson 下界过门槛才初步可用，硬放行需扩 gold（吸收 I4）",
     }

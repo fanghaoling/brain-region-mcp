@@ -1,0 +1,195 @@
+# Advice judge 校准 gold（stark 对）：每对是同一会诊问题的 good advice vs bad advice。
+# good=切中根因/最小可证伪实验/权衡方案；bad 在某 failure_mode 上明确劣化。
+# 用于测 advice judge（judge_task_advice + advice_v1.md）能否稳定把 good 排前面（useful/overall 越大越好）。
+# n=10 = smoke（吸收 I4）：只算初步可用，看 Wilson 下界，不支撑硬放行。
+# advice dict 用 ConsultReport 聚合层 shape：summary/likely_causes/next_experiments/solution_options/risks/recommended_plan。
+
+- id: adv-001
+  failure_mode: vague_no_evidence
+  task: "Flaky integration test: intermittent AssertionError in payment reconciliation, only on CI."
+  good:
+    summary: "Likely a race between the reconciliation job and DB reconnect; confirm with a targeted load test."
+    likely_causes: ["DB reconnect fires mid-reconciliation, leaving in-flight rows uncommitted"]
+    next_experiments: ["Force reconnects under load and assert row counts match"]
+    solution_options: ["Gate reconciliation on connection-state; queue rows during reconnect"]
+    risks: ["Naive sleep masks the race without fixing it"]
+    recommended_plan: ["Add connection-state guard + load test before fix"]
+  bad:
+    summary: "Tests are flaky; try restarting the CI runner or adding sleeps."
+    likely_causes: ["CI is unreliable"]
+    next_experiments: []
+    solution_options: ["Restart CI", "Add sleeps"]
+    risks: []
+    recommended_plan: ["Retry until green"]
+  note: "bad 空泛无证据，good 给具体根因+实验。"
+
+- id: adv-002
+  failure_mode: harmful_advice
+  task: "Reviewing a REST endpoint that builds SQL from user input before launch."
+  good:
+    summary: "Parameterize queries AND check authz per row; injection and 越权 are separate surfaces."
+    likely_causes: ["String-built SQL", "Missing per-row authorization check"]
+    next_experiments: ["Inject payload tests + authz matrix tests per role"]
+    solution_options: ["Parameterized queries + row-level authz + allowlist"]
+    risks: ["Parameterization alone leaves 越权 open"]
+    recommended_plan: ["Fix both surfaces, add tests, then launch"]
+  bad:
+    summary: "Just disable the endpoint if you're worried; or trust the firewall."
+    likely_causes: ["Probably fine"]
+    next_experiments: []
+    solution_options: ["Disable endpoint", "Trust the WAF"]
+    risks: []
+    recommended_plan: ["Ship and monitor"]
+  note: "bad 有害（关闭/信任防火墙而非修漏洞）。"
+
+- id: adv-003
+  failure_mode: missing_critical
+  task: "Zero-downtime data migration across sharded stores."
+  good:
+    summary: "Decompose into reversible stages with acceptance gates; plan a rollback at every step."
+    likely_causes: ["No rollback path mid-migration is the top risk"]
+    next_experiments: ["Dry-run cutover on one shard with rollback timed"]
+    solution_options: ["Dual-write + backfill + cutover toggle", "Shadow reads before cutover"]
+    risks: ["Dual-write drift", "Stuck mid-migration without rollback"]
+    recommended_plan: ["Reversible stages, shadow reads, rollback drill"]
+  bad:
+    summary: "Migrate all shards at once over the weekend."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["Big-bang migration"]
+    risks: []
+    recommended_plan: ["Run it Saturday"]
+  note: "bad 漏关键风险（无回滚、big-bang）。"
+
+- id: adv-004
+  failure_mode: irrelevant_noise
+  task: "Burst job system: GC allocations in the hot path cause frame hitches."
+  good:
+    summary: "Per-frame NativeArray allocations in the Burst job; hoist them out of the loop."
+    likely_causes: ["NativeArray allocated per-frame inside the job", "ECB played sync in hot path"]
+    next_experiments: ["Profile allocation count per frame before/after hoisting"]
+    solution_options: ["Persistent NativeArray + ECB late-play", "Pool buffers"]
+    risks: ["Persistent buffers need explicit disposal"]
+    recommended_plan: ["Hoist allocations, re-profile, verify disposal"]
+  bad:
+    summary: "Have you considered using a different game engine? Also, add more comments."
+    likely_causes: ["Code readability"]
+    next_experiments: []
+    solution_options: ["Rewrite in another engine", "Add comments"]
+    risks: []
+    recommended_plan: ["Evaluate engines"]
+  note: "bad 跑题（换引擎/加注释，不解决 GC）。"
+
+- id: adv-005
+  failure_mode: redundant
+  task: "Cache eviction: LRU vs LFU for a read-heavy workload."
+  good:
+    summary: "LFU favors hot keys under read-heavy skew; validate hit-rate with a trace replay."
+    likely_causes: ["LRU evicts hot keys under bursty access patterns"]
+    next_experiments: ["Replay a production trace through both policies"]
+    solution_options: ["LFU", "LFU with frequency decay", "TinyLFU"]
+    risks: ["LFU can retain stale hot keys"]
+    recommended_plan: ["Trace replay, pick by measured hit-rate"]
+  bad:
+    summary: "LRU evicts the least recently used. LFU evicts the least frequently used. Both are caches."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["LRU", "LFU"]
+    risks: []
+    recommended_plan: ["Pick one"]
+  note: "bad 只重复定义、不给取舍/验证。"
+
+- id: adv-006
+  failure_mode: vague_no_evidence
+  task: "Choosing between two streaming architectures; need a sanity check before committing."
+  good:
+    summary: "Option A favors latency budget at higher cost; Option B is cheaper but tail-latency riskier. Decide by p99 SLO."
+    likely_causes: ["B's batching increases tail latency under load"]
+    next_experiments: ["Load-test both to p99; compare cost at equal SLO"]
+    solution_options: ["A (low-latency, costly)", "B (cheap, tail risk)", "B + adaptive batching"]
+    risks: ["Choosing B without tail-latency proof"]
+    recommended_plan: ["Decide on p99 SLO + cost tradeoff curve"]
+  bad:
+    summary: "Both options are fine. Go with your gut."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["Option A or B"]
+    risks: []
+    recommended_plan: ["Just pick one"]
+  note: "bad 空泛（都行/凭直觉）。"
+
+- id: adv-007
+  failure_mode: harmful_advice
+  task: "Production incident: elevated 5xx on the checkout path."
+  good:
+    summary: "Roll back the last deploy; isolate the failing node while keeping traffic served."
+    likely_causes: ["Last deploy introduced a null-deref on a rare cart config"]
+    next_experiments: ["Replay the failing request against previous build"]
+    solution_options: ["Rollback", "Quarantine node + hotfix", "Feature-flag off the new path"]
+    risks: ["Rollback loses the fix; coordinate with on-call"]
+    recommended_plan: ["Rollback, confirm recovery, then root-cause"]
+  bad:
+    summary: "Delete the failing requests from logs so the alert stops; ignore and wait."
+    likely_causes: ["Alerts are noisy"]
+    next_experiments: []
+    solution_options: ["Suppress the alert", "Delete bad logs"]
+    risks: []
+    recommended_plan: ["Wait it out"]
+  note: "bad 有害（删日志/抑制告警掩盖事故）。"
+
+- id: adv-008
+  failure_mode: missing_critical
+  task: "Adding a new async background worker to process user uploads."
+  good:
+    summary: "Worker needs idempotency + dead-letter + backpressure; unbounded concurrency will OOM under burst."
+    likely_causes: ["No concurrency limit", "No retry/dead-letter on failure"]
+    next_experiments: ["Burst-load the worker and watch memory + retry behavior"]
+    solution_options: ["Bounded concurrency + idempotent handler + DLQ", "Rate-limit at ingress"]
+    risks: ["Without DLQ, poison messages stall the queue"]
+    recommended_plan: ["Add bounds + idempotency + DLQ, then load-test"]
+  bad:
+    summary: "Spawn a goroutine per upload; fire and forget."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["Unbounded goroutines"]
+    risks: []
+    recommended_plan: ["Just process them"]
+  note: "bad 漏关键（无并发限制/幂等/DLQ → OOM/丢任务）。"
+
+- id: adv-009
+  failure_mode: irrelevant_noise
+  task: "Memory: deciding when to persist advice vs discard in our feedback loop."
+  good:
+    summary: "Persist advice tied to a finding with decision+timestamp; decay confidence unless reconfirmed by later outcomes."
+    likely_causes: ["Unbounded persistence with no decay rots the knowledge base"]
+    next_experiments: ["Measure how often persisted advice is later contradicted"]
+    solution_options: ["Persist with valid_until + confidence decay", "Decay-by-outcome"]
+    risks: ["Aggressive decay loses rare-but-valuable advice"]
+    recommended_plan: ["Persist with decay, gate by outcome reconfirmation"]
+  bad:
+    summary: "You should also refactor the auth module and upgrade the database."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["Refactor auth", "Upgrade DB"]
+    risks: []
+    recommended_plan: ["Do a big rewrite"]
+  note: "bad 跑题（扯 auth/DB 重构）。"
+
+- id: adv-010
+  failure_mode: redundant
+  task: "Investigating which library to use for a CSV import pipeline."
+  good:
+    summary: "Pick by streaming + quoting-handling correctness under adversarial input; benchmark on malformed CSVs."
+    likely_causes: ["Some libs buffer whole file → OOM on large/adversarial input"]
+    next_experiments: ["Run each lib against a malformed-CSV corpus"]
+    solution_options: ["Streaming lib A", "Lib B with sandbox", "Custom line reader"]
+    risks: ["Quoting bugs cause silent data corruption"]
+    recommended_plan: ["Decide by correctness corpus + memory profile"]
+  bad:
+    summary: "Library A is a library. Library B is also a library. Libraries are used in pipelines."
+    likely_causes: []
+    next_experiments: []
+    solution_options: ["A", "B"]
+    risks: []
+    recommended_plan: ["Use a library"]
+  note: "bad 只重复常识、不给评判标准。"

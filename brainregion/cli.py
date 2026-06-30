@@ -100,7 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cal.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
     p_cal.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
     p_cal.add_argument("--threshold", type=float, default=0.7, help="agreement 达标阈值（默认 0.7）")
-    p_cal.add_argument("--rubric", default=None, help="rubric 文件（默认 eval/rubrics/review_v1.md）")
+    p_cal.add_argument("--rubric", default=None, help="rubric 文件（默认 review_v1.md；--advice 用 advice_v1.md）")
+    p_cal.add_argument("--advice", action="store_true",
+                       help="校准 advice judge（outcome eval 用；落 CalibrationRecord，gate 前置）")
     p_cal.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_cal.add_argument("--output-file", default=None)
 
@@ -154,19 +156,29 @@ def _eval_markdown(result: dict) -> str:
 
 
 def _calibrate_markdown(result: dict) -> str:
-    """calibrate 汇总的简易 markdown 渲染。"""
+    """calibrate 汇总的简易 markdown 渲染（review + advice 两种 summary 都兼容）。"""
     s = result.get("summary", {})
     verdict = "✅ 校准达标" if s.get("calibrated") else "❌ 未达标（judge/rubric 需调）"
     lines = [
         f"# Calibrate {result.get('run_id', '')}", "",
         f"judges={result.get('judge_models')} pairs={result.get('n_pairs')} threshold={s.get('threshold')}",
-        f"agreement={s.get('agreed')}/{s.get('total')} = {s.get('agreement_rate')} → {verdict}", "",
-        "## 按 failure_mode",
+        f"agreement={s.get('agreed')}/{s.get('total')} = {s.get('agreement_rate')} → {verdict}",
     ]
+    if "wilson_lower" in s:
+        lines.append(f"wilson_lower={s.get('wilson_lower')} tie_rate={s.get('tie_rate')}（下界过门槛才 calibrated；n 小不硬放行）")
+    lines += ["", "## 按 failure_mode"]
     for fm, rate in (s.get("per_failure_mode") or {}).items():
         lines.append(f"- {fm}: {rate}")
     if s.get("per_metric"):
-        lines += ["", "## 按 metric"] + [f"- {m}: {r}" for m, r in s["per_metric"].items()]
+        lines += ["", "## 按 metric"] + [
+            f"- {m}: {r if isinstance(r, (int, float)) else r.get('agreement')}"
+            for m, r in s["per_metric"].items()
+        ]
+    if s.get("penalty_metrics"):
+        lines += ["", "## penalty metrics（lower=better，diagnostic）"] + [
+            f"- {m}: correct_direction={r.get('correct_direction_rate')}"
+            for m, r in s["penalty_metrics"].items()
+        ]
     if s.get("wrong_pairs"):
         lines += ["", "## ❌ 错判（good 未 > bad）"] + [f"- {w}" for w in s["wrong_pairs"]]
     return "\n".join(lines)
@@ -215,8 +227,22 @@ def _outcome_markdown(result: dict) -> str:
             f"{m.get('missed_critical_total')} | {m.get('latency_p95_ms')} |"
         )
     lines += ["", f"## Gate: {gate.get('decision')}"]
+    diag = gate.get("diagnostics") or {}
+    if diag.get("pilot"):
+        lines.append(f"_pilot 模式：有效 n={diag.get('effective_n')} < formal_min_n，不宣称可信闸门_")
     for r in (gate.get("reasons") or []):
         lines.append(f"- {r}")
+    ci_block = []
+    for label, key in (("cost_ratio", "cost_ratio_ci"), ("useful_delta", "useful_delta_ci"),
+                       ("missed_critical_delta", "missed_critical_delta_ci")):
+        ci = diag.get(key) or {}
+        if ci.get("point") is not None:
+            ci_block.append(
+                f"- {label}: point={round(ci['point'], 4)} CI=[{round(ci['low'], 4)}, {round(ci['high'], 4)}]"
+                f" eff_rate={ci.get('effective_rate')}"
+            )
+    if ci_block:
+        lines += ["", "## Bootstrap CI（估计量层，per metric 独立流）"] + ci_block
     sanity = s.get("sanity", {})
     if sanity.get("errors"):
         lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
@@ -240,7 +266,8 @@ def main() -> None:
         _emit(result, args)
         return
     if args.command == "calibrate":
-        result = asyncio.run(eval_cli.run_calibrate(args))
+        runner = eval_cli.run_calibrate_advice if getattr(args, "advice", False) else eval_cli.run_calibrate
+        result = asyncio.run(runner(args))
         if args.output_format != "json":
             result["rendered"] = _calibrate_markdown(result)
         _emit(result, args)

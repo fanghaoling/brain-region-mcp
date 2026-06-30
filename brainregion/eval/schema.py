@@ -87,3 +87,24 @@ class EvalLedgerEntry:
     n_tasks: int = 0
     summary: dict = field(default_factory=dict)
     # {per_variant: {cost_per_useful_advice, useful_advice_rate, latency_p50, latency_p95}, sanity: [...]}
+
+
+@dataclass
+class CalibrationRecord:
+    """judge 校准 artifact（outcome gate 出 GO/NO_GO 前强制验证，吸收 I6）。
+
+    五元组 (judge_id, judge_model, rubric_hash, prompt_hash, gold_version) 唯一标识一把校准；
+    任一改变（rubric / judge prompt 模板 / gold 内容）→ 视为不同/失效，需重校准。
+    """
+
+    judge_id: str
+    judge_model: str
+    rubric_hash: str
+    prompt_hash: str           # hash(渲染的 judge prompt skeleton)，吸收 GPT 建议 1
+    gold_version: str = ""     # gold 内容 hash
+    agreement_rate: float = 0.0
+    wilson_lower: float = 0.0
+    threshold: float = 0.7
+    passed: bool = False       # wilson_lower >= threshold
+    run_id: str = ""
+    date: str = ""

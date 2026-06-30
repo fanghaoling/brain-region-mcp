@@ -213,3 +213,15 @@ async def judge_task_advice(
         backend, judge_entry, rubric_text, rubric_hash, run_id, task_id,
         variant_outputs, desensitize_advice, _build_advice_user, task_context,
     )
+
+
+def advice_prompt_skeleton_hash(rubric_text: str) -> str:
+    """校准 artifact 的 prompt 指纹：hash(rubric + 渲染的 advice-judge prompt skeleton + advice 字段表)。
+
+    自动捕捉 rubric / `_build_advice_user` 模板 / `desensitize_advice` 字段表的任何变更，
+    **无需手维护版本常量**（吸收 GPT 建议 1：防 template 改了常量忘更新 → 校准误 pass）。
+    """
+    placeholder = {"X": [{f: "x" for f in _ADVICE_FIELDS}]}
+    skeleton = _build_advice_user(placeholder, task_context="ctx")
+    blob = f"{rubric_text or ''}\n===SKELETON===\n{skeleton}\n===FIELDS===\n{list(_ADVICE_FIELDS)}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

@@ -84,8 +84,59 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS eval_calibrations (
+            judge_id TEXT NOT NULL,
+            judge_model TEXT NOT NULL,
+            rubric_hash TEXT NOT NULL,
+            prompt_hash TEXT NOT NULL,
+            gold_version TEXT,
+            agreement_rate REAL,
+            wilson_lower REAL,
+            threshold REAL,
+            passed INTEGER,
+            run_id TEXT,
+            date TEXT,
+            summary TEXT,
+            PRIMARY KEY (judge_id, judge_model, rubric_hash, prompt_hash, gold_version)
+        )
+        """
+    )
     conn.commit()
     return conn
+
+
+def record_calibration(rec, summary: dict) -> None:
+    """落 advice judge 校准 artifact（五元组 upsert）。"""
+    try:
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO eval_calibrations(judge_id,judge_model,rubric_hash,prompt_hash,gold_version,"
+            "agreement_rate,wilson_lower,threshold,passed,run_id,date,summary) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(judge_id,judge_model,rubric_hash,prompt_hash,gold_version) DO UPDATE SET "
+            "  agreement_rate=excluded.agreement_rate,wilson_lower=excluded.wilson_lower,"
+            "  threshold=excluded.threshold,passed=excluded.passed,run_id=excluded.run_id,"
+            "  date=excluded.date,summary=excluded.summary",
+            (rec.judge_id, rec.judge_model, rec.rubric_hash, rec.prompt_hash, rec.gold_version,
+             rec.agreement_rate, rec.wilson_lower, rec.threshold, 1 if rec.passed else 0,
+             rec.run_id, rec.date, json.dumps(summary, ensure_ascii=False, default=str)),
+        )
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("eval record_calibration 失败: %s", e)
+
+
+def lookup_calibration(judge_id, judge_model, rubric_hash, prompt_hash, gold_version="") -> dict | None:
+    """查最新匹配的校准 artifact（outcome gate 出判定前强制验证）。无 → None（→ CALIBRATION_REQUIRED）。"""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM eval_calibrations WHERE judge_id=? AND judge_model=? AND rubric_hash=? "
+        "AND prompt_hash=? AND gold_version=? ORDER BY date DESC LIMIT 1",
+        (judge_id, judge_model, rubric_hash, prompt_hash, gold_version),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def _as_json(obj) -> str:
