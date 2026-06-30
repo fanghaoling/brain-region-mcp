@@ -46,12 +46,14 @@
   gold_regions: [planning]
   notes: "planning→[architect,test_designer,critic]。"
 
-- id: oc-005-memory-fallback
+- id: oc-005-research-fallback
   task_type: consult
   difficulty: simple
   input:
-    problem: "Cache eviction policy tuning for a read-heavy workload: LRU vs LFU. Want a sanity check on my analysis of hit-rate under skewed keys."
-    goal: "Confirm or correct the eviction policy choice."
-  gold_regions: [memory]
-  notes: "memory 无 consult specialist→B 必须回退默认（mapping_source=fallback）。sanity/wake_stats 应反映 fallback。
-    对照：测'唤醒但无 specialist 可派'路径不比 A 差（B≡A）。"
+    problem: "Choosing between two streaming architectures; need to research the tradeoffs across documentation and recent papers before committing. Want a sanity check on which fits our latency budget."
+    question: "Which option is the better fit, and what evidence should I weigh?"
+    goal: "A sanity check on the tradeoff analysis."
+  gold_regions: [research]
+  notes: "research 无 consult specialist→B 必须回退默认（mapping_source=fallback）。
+    对照：测'唤醒但无 specialist 可派'路径不比 A 差（B≡A）。research triggers: research/documentation/paper/调研。
+    注：memory region 指项目自有的反馈/知识沉淀（mark_finding/advice feedback），不是 cache/LRU——别混淆。"
