@@ -14,6 +14,7 @@ import logging
 import statistics
 import time
 from datetime import datetime, timezone
+from typing import Protocol
 
 from ..core.document import ReviewDocument
 from ..server import _build_engine, _normalize_panel, _resolve_endpoints
@@ -107,28 +108,51 @@ def _pct(values: list[float], p: float) -> float:
     return round(s[k], 1)
 
 
+class _AggRecord(Protocol):
+    """aggregate_variant_stats 的 record 契约（结构化，不绑具体 dataclass）。"""
+
+    variant: str
+    cost: dict
+    latency_ms: float
+
+
+class _AggJudgement(Protocol):
+    """aggregate_variant_stats 的 judgement 契约。"""
+
+    variant: str
+    scores: dict
+
+
+def aggregate_variant_stats(recs: list[_AggRecord], jdgs: list[_AggJudgement]) -> dict:
+    """单变体的有用率/cost/latency/overall 统计（review/outcome/未来 planner 共用）。
+
+    recs/jdgs 已按 variant 过滤。cost_per_useful_advice = inference_usd/useful（useful=0 → None）。
+    """
+    useful = sum(int((j.scores or {}).get("useful", 0) or 0) for j in jdgs)
+    total = len(jdgs)
+    inference = sum(float((r.cost or {}).get("inference_usd") or 0) for r in recs)
+    lat = [float(r.latency_ms or 0) for r in recs]
+    return {
+        "n": len(recs),
+        "useful_advice_total": useful,
+        "useful_advice_rate": round(useful / total, 3) if total else 0.0,
+        "cost_per_useful_advice": round(inference / useful, 6) if useful else None,
+        "inference_cost_usd": round(inference, 6),
+        "latency_p50_ms": _pct(lat, 0.5),
+        "latency_p95_ms": _pct(lat, 0.95),
+        "mean_overall": round(
+            statistics.mean([float((j.scores or {}).get("overall", 0) or 0) for j in jdgs]) if jdgs else 0,
+            3,
+        ),
+    }
+
+
 def compute_summary(records: list, judgements: list, variants: list[VariantSpec]) -> dict:
     per_variant: dict[str, dict] = {}
     for v in variants:
         recs = [r for r in records if r.variant == v.name]
         jdgs = [j for j in judgements if j.variant == v.name]
-        useful = sum(int((j.scores or {}).get("useful", 0) or 0) for j in jdgs)
-        total = len(jdgs)
-        inference = sum(float((r.cost or {}).get("inference_usd") or 0) for r in recs)
-        lat = [float(r.latency_ms or 0) for r in recs]
-        per_variant[v.name] = {
-            "n": len(recs),
-            "useful_advice_total": useful,
-            "useful_advice_rate": round(useful / total, 3) if total else 0.0,
-            "cost_per_useful_advice": round(inference / useful, 6) if useful else None,
-            "inference_cost_usd": round(inference, 6),
-            "latency_p50_ms": _pct(lat, 0.5),
-            "latency_p95_ms": _pct(lat, 0.95),
-            "mean_overall": round(
-                statistics.mean([float((j.scores or {}).get("overall", 0) or 0) for j in jdgs]) if jdgs else 0,
-                3,
-            ),
-        }
+        per_variant[v.name] = aggregate_variant_stats(recs, jdgs)
     return {"per_variant": per_variant}
 
 

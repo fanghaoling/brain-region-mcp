@@ -1,0 +1,57 @@
+# Outcome eval 任务集：每个是真实会诊问题（consult）。gold_regions 给 wake_gate 的 wake_metrics
+# （gate 判定 missed_wake_rate 用），judge 看不到 gold。覆盖有 specialist 的 region + 1 个回退对照。
+# A=default（debugger/architect/critic）；B=routed（wake_gate 派生）。
+# task_type=consult 区分于 review routing 任务。judge 按 advice_v1.md 盲评 useful/missed_critical。
+
+- id: oc-001-debugging-flaky
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Flaky integration test: intermittent AssertionError in the payment reconciliation job, only on CI, never locally. Race condition suspected around a DB reconnect."
+    why_stuck: "Cannot reproduce locally; CI logs show the failure immediately after a DB reconnect."
+    question: "What are the most likely race conditions, and what is the smallest experiment to confirm?"
+    current_attempt: "Added sleeps around the reconnect; still flaky."
+    goal: "Find root cause + one confirming experiment."
+  gold_regions: [debugging]
+  notes: "B 应唤醒 debugging→[debugger]（比 A 的三专家更聚焦）。"
+
+- id: oc-002-security-injection
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Reviewing a REST endpoint that builds SQL from user input before launch. Need to challenge the authz boundary and injection surface—parameterized queries alone may not cover 越权 (privilege escalation)."
+    why_stuck: "Not sure if parameterized queries alone close the 越权 and injection risks."
+    question: "Where are the real privilege-escalation and injection risks, and what tests prove they're closed?"
+  gold_regions: [security]
+  notes: "security 无同名 consultant→[challenge,critic]。sqli/越权 在 security 的 sentinel_keywords，
+    wake_gate 默认 full 配置（sentinel=True）才兜住——outcome eval 用默认配置。"
+
+- id: oc-003-perf-ecs
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Unity Burst job system: GC allocations in the hot path (NativeArray + SystemAPI) cause frame hitches. Need latency-focused specialist plus ECS-aware critique of the job schedule."
+    why_stuck: "Profiling shows per-frame allocations in a Burst job; not sure which EntityCommandBuffer pattern removes them."
+    goal: "Cut hot-path allocations without breaking the Jobs schedule."
+  gold_regions: [performance, unity_ecs]
+  notes: "联合唤醒→consultants=[performance,critic]∪[unity_ecs]=[performance,critic,unity_ecs]。"
+
+- id: oc-004-planning-migration
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Zero-downtime data migration across sharded stores: decompose into milestones, rollback plan, risks, and testable acceptance criteria."
+    why_stuck: "Unsure how to order the cutover so rollback is always possible mid-migration."
+    goal: "A plan with testable acceptance gates and a rollback path."
+  gold_regions: [planning]
+  notes: "planning→[architect,test_designer,critic]。"
+
+- id: oc-005-memory-fallback
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Cache eviction policy tuning for a read-heavy workload: LRU vs LFU. Want a sanity check on my analysis of hit-rate under skewed keys."
+    goal: "Confirm or correct the eviction policy choice."
+  gold_regions: [memory]
+  notes: "memory 无 consult specialist→B 必须回退默认（mapping_source=fallback）。sanity/wake_stats 应反映 fallback。
+    对照：测'唤醒但无 specialist 可派'路径不比 A 差（B≡A）。"

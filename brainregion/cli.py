@@ -110,6 +110,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_route.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_route.add_argument("--output-file", default=None)
 
+    p_out = sub.add_parser(
+        "outcome",
+        help="量 wake_gate→consult 建议质量（A=default vs B=routed，真调模型+盲评+gate）",
+    )
+    p_out.add_argument("fixtures_dir", help="fixtures 目录（*.yaml consult 任务，需带 gold_regions）")
+    p_out.add_argument("--adapter", default="auto", choices=["auto", "unity", "generic"])
+    p_out.add_argument("--panel", nargs="*", default=None, help="consult panel 覆盖（建议单便宜模型控成本）")
+    p_out.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
+    p_out.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+    p_out.add_argument("--max-cost-usd", type=float, default=None)
+    p_out.add_argument("--rubric", default=None, help="rubric 文件（默认 eval/rubrics/advice_v1.md）")
+    p_out.add_argument("--regions-dir", default=None, help="region yaml 目录（默认内置 REGIONS_DIR）")
+    p_out.add_argument("--export", default=None, help="导出本次 run 为 JSONL 路径")
+    p_out.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_out.add_argument("--output-file", default=None)
+
     return parser
 
 
@@ -179,6 +195,36 @@ def _routing_markdown(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _outcome_markdown(result: dict) -> str:
+    """outcome 汇总的简易 markdown 渲染（json 是主输出）。"""
+    s = result.get("summary", {})
+    pv = s.get("per_variant", {})
+    gate = result.get("gate", {})
+    lines = [
+        f"# Outcome eval {result.get('run_id', '')}", "",
+        f"tasks={result.get('n_tasks')} variants={result.get('variants')} "
+        f"judges={result.get('judge_models')} "
+        f"overlap(routed≡default)={s.get('routed_default_overlap_rate')}", "",
+        "| variant | useful_rate | cost/useful | inference$ | missed_wake | missed_critical | p95ms |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name, m in pv.items():
+        lines.append(
+            f"| {name} | {m.get('useful_advice_rate')} | {m.get('cost_per_useful_advice')} | "
+            f"{m.get('inference_cost_usd')} | {m.get('missed_wake_rate')} | "
+            f"{m.get('missed_critical_total')} | {m.get('latency_p95_ms')} |"
+        )
+    lines += ["", f"## Gate: {gate.get('decision')}"]
+    for r in (gate.get("reasons") or []):
+        lines.append(f"- {r}")
+    sanity = s.get("sanity", {})
+    if sanity.get("errors"):
+        lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
+    if sanity.get("warnings"):
+        lines += ["", "## ⚠️ Sanity warnings"] + [f"- {w}" for w in sanity["warnings"]]
+    return "\n".join(lines)
+
+
 def main() -> None:
     # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
     # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
@@ -203,6 +249,12 @@ def main() -> None:
         result = eval_cli.run_routing(args)  # 同步、不调模型
         if args.output_format != "json":
             result["rendered"] = _routing_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "outcome":
+        result = asyncio.run(eval_cli.run_outcome(args))
+        if args.output_format != "json":
+            result["rendered"] = _outcome_markdown(result)
         _emit(result, args)
         return
     common = dict(

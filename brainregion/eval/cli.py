@@ -25,12 +25,14 @@ from .routing import (
     routing_sanity,
     run_routing_eval,
 )
+from .outcome import DEFAULT_OUTCOME_VARIANTS, run_outcome_eval
 from .runner import build_engines, make_run_id, run_eval
 from .schema import EvalTask, VariantSpec
 
 logger = logging.getLogger("brainregion.eval.cli")
 
 _DEFAULT_RUBRIC = Path(__file__).parent / "rubrics" / "review_v1.md"
+_DEFAULT_OUTCOME_RUBRIC = Path(__file__).parent / "rubrics" / "advice_v1.md"
 
 
 def load_tasks(fixtures_dir: str) -> list[EvalTask]:
@@ -206,4 +208,55 @@ async def run_calibrate(args) -> dict:
         "rubric_hash": rhash,
         "n_pairs": len(gold),
         "summary": summary,
+    }
+
+
+async def run_outcome(args) -> dict:
+    """`brain-region outcome`：量 wake_gate→consult 建议质量（A=default vs B=routed，真调模型+盲评+gate）。
+
+    让 wake_gate 的 woken 真正驱动 consult 选 consultants，盲评 judge 量 useful，对照
+    cost_per_useful_advice（roadmap §8 v5.5 主指标），evaluate_gate 出 GO/NO_GO/INCONCLUSIVE。
+    """
+    dd = _defaults_mod.apply()
+    variants = DEFAULT_OUTCOME_VARIANTS
+
+    endpoints_cfg = dd.get("endpoints") or {}
+    endpoint_ids = set((_resolve_endpoints(endpoints_cfg) or {}).keys())
+    judge_specs = args.judges or [dd.get("normalizer_model", "claude-opus-4-8")]
+    judge_entries = parse_judges(judge_specs, endpoint_ids, endpoints_cfg)
+
+    rubric_path = Path(args.rubric) if getattr(args, "rubric", None) else _DEFAULT_OUTCOME_RUBRIC
+    rubric_text = rubric_path.read_text(encoding="utf-8") if rubric_path.exists() else ""
+    rhash = rubric_hash(rubric_text)
+
+    tasks = load_tasks(args.fixtures_dir)
+    if not tasks:
+        raise SystemExit(f"fixtures 目录无 *.yaml 任务: {args.fixtures_dir}")
+
+    regions_dir = getattr(args, "regions_dir", None) or REGIONS_DIR
+    run_id = make_run_id()
+    _, _, entry, gate = await run_outcome_eval(
+        tasks, variants, judge_entries, dd, rubric_text, rhash, run_id,
+        effort=args.effort,
+        max_cost_usd=args.max_cost_usd if args.max_cost_usd is not None else 1.0,
+        panel_override=getattr(args, "panel", None),
+        regions_dir=regions_dir,
+    )
+
+    exported = None
+    if getattr(args, "export", None):
+        exported = store.export_jsonl(run_id, args.export)
+
+    return {
+        "run_id": run_id,
+        "n_tasks": entry.n_tasks,
+        "variants": entry.variants,
+        "judge_models": entry.judge_models,
+        "metadata": {
+            "git_sha": entry.git_sha, "rubric_hash": entry.rubric_hash,
+            "defaults_hash": entry.defaults_hash,
+        },
+        "summary": entry.summary,
+        "gate": gate,
+        "exported_jsonl": exported,
     }

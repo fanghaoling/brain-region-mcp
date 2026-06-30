@@ -93,14 +93,62 @@ def _build_user(labeled: dict[str, list[dict]], task_context: str = "") -> str:
     return "\n".join(parts)
 
 
-async def judge_task(
-    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
-    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
-) -> list[BlindJudgement]:
-    """对一个任务的各变体输出盲评，返回每个变体一条 BlindJudgement。
+_ADVICE_FIELDS = ("summary", "likely_causes", "next_experiments", "solution_options", "risks", "recommended_plan")
+_ADVICE_LABELS = (
+    ("likely_causes", "可能原因"), ("next_experiments", "下一步实验"),
+    ("solution_options", "可选方案"), ("risks", "风险"), ("recommended_plan", "推荐计划"),
+)
 
-    variant_outputs: {variant_name: outputs_json_str}（来自 EvalCaseRecord.outputs_json）。
-    task_context: 待审查内容摘要——给 judge 看"被审查的是什么"，才能判 missing_critical/相关性。
+
+def desensitize_advice(report_dict: dict) -> list[dict]:
+    """把 ConsultReport 拍平成中性 advice 列表，剥离 model/consultant/routing 等身份字段。
+
+    保留聚合层建议实质（summary/likely_causes/next_experiments/solution_options/risks/
+    recommended_plan——这些本身就是推理产物：假设/实验/备选/风险/计划）；聚合层为空时回退到逐条
+    individual（同样剥身份）。剥离 individual[].model/consultant、routing、panel、consultation_id、
+    usage、budget、guard——judge 看不到变体身份。无隐藏 CoT trace（consult 输出本无此字段）。
+    """
+    out: list[dict] = []
+    top = {k: report_dict.get(k, [] if k != "summary" else "") for k in _ADVICE_FIELDS}
+    if any(top.values()):
+        out.append(top)
+    else:
+        for a in report_dict.get("individual") or []:
+            item = {k: a.get(k, [] if k != "summary" else "") for k in _ADVICE_FIELDS}
+            if any(item.values()):
+                out.append(item)
+    return out
+
+
+def _build_advice_user(labeled: dict[str, list[dict]], task_context: str = "") -> str:
+    parts: list[str] = []
+    if task_context:
+        parts.append(f"【会诊问题】\n{task_context.strip()}\n")
+    for label, advices in labeled.items():
+        parts.append(f"=== 候选建议 {label} ===")
+        if not advices:
+            parts.append("（无建议）")
+            continue
+        for i, a in enumerate(advices, 1):
+            parts.append(f"建议 {i}:")
+            if a.get("summary"):
+                parts.append(f"  摘要: {a['summary']}")
+            for fld, name in _ADVICE_LABELS:
+                val = a.get(fld)
+                if val:
+                    parts.append(f"  {name}: {val}")
+    parts.append("\n请按 schema 输出各标签的 JSON 评分。")
+    return "\n".join(parts)
+
+
+async def _blind_score(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict,
+    desens_fn, build_user_fn, task_context: str = "",
+) -> list[BlindJudgement]:
+    """盲评共享骨架：desens_fn(rep)->list[dict] + build_user_fn(labeled, ctx)->str。
+
+    脱敏 → 确定性打乱（_seed(task_id)，同任务可复现）→ backend.complete → extract_json_object → 还原变体。
     """
     variants = list(variant_outputs.keys())
     # 1. 脱敏
@@ -110,7 +158,7 @@ async def judge_task(
             rep = json.loads(variant_outputs[v]) if variant_outputs[v] else {}
         except Exception:  # noqa: BLE001
             rep = {}
-        desens[v] = desensitize(rep)
+        desens[v] = desens_fn(rep)
     # 2. 确定性打乱 variant → label，记录映射
     order = list(variants)
     random.Random(_seed(task_id)).shuffle(order)
@@ -118,7 +166,7 @@ async def judge_task(
     label_to_variant = dict(zip(labels, order))
     labeled = {lab: desens[v] for lab, v in label_to_variant.items()}
     # 3. 调 judge
-    user = _build_user(labeled, task_context)
+    user = build_user_fn(labeled, task_context)
     resp = await backend.complete(
         model=judge_entry["model"],
         system=rubric_text or RUBRIC_DEFAULT,
@@ -143,3 +191,25 @@ async def judge_task(
             judge_cost_usd=judge_cost,
         ))
     return results
+
+
+async def judge_task(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
+) -> list[BlindJudgement]:
+    """review findings 盲评（desensitize + _build_user）。"""
+    return await _blind_score(
+        backend, judge_entry, rubric_text, rubric_hash, run_id, task_id,
+        variant_outputs, desensitize, _build_user, task_context,
+    )
+
+
+async def judge_task_advice(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
+) -> list[BlindJudgement]:
+    """consult advice 盲评（desensitize_advice + _build_advice_user）。供 outcome eval。"""
+    return await _blind_score(
+        backend, judge_entry, rubric_text, rubric_hash, run_id, task_id,
+        variant_outputs, desensitize_advice, _build_advice_user, task_context,
+    )
