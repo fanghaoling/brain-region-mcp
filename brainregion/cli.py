@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from brain_region.server import review_document
+from brainregion.server import review_document
 
 
 def _read_text_input(args) -> str:
