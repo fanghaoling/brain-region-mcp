@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+![CI](https://github.com/fanghaoling/brainregion/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/github/license/fanghaoling/brainregion.svg)
+![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue.svg)
+
 BrainRegion is AI collaboration infrastructure for review, consultation, planning, and memory.
 
 This project was formerly `design-review-mcp`. The internal Python package has moved to `brainregion`, while the old

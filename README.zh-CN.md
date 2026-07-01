@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+![CI](https://github.com/fanghaoling/brainregion/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/github/license/fanghaoling/brainregion.svg)
+![Python](https://img.shields.io/badge/python-%E2%88%803.10-blue.svg)
+
 BrainRegion 是面向 review、consultation、planning 和 memory 的 AI 协作基础设施。
 
 这个项目原名 `design-review-mcp`。内部 Python 包名已经迁移到 `brainregion`；重命名期间旧命令别名仍然保留，避免已有配置突然失效。
