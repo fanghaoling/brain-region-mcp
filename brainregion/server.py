@@ -55,7 +55,8 @@ from .core.wake import wake_gate as _wake_gate  # noqa: E402
 from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E402
 from .core import ReviewDocument  # noqa: E402
 from .knowledge import YamlKnowledgeProvider  # noqa: E402
-from .memory import store as memory_store  # noqa: E402
+from .core.context import ContextQuery as _ContextQuery  # noqa: E402
+from .memory import MemoryProvider, store as memory_store  # noqa: E402
 from .privacy import build_policy  # noqa: E402
 from .providers import LiteLLMBackend  # noqa: E402
 
@@ -1311,6 +1312,16 @@ async def consult_problem(
         cost_limit = dd.get("max_cost_usd")
     input_limit = int(max_input_chars if max_input_chars is not None else dd.get("consult_max_input_chars", 24000))
 
+    # ContextProvider 召回（memory 脑区扶正，Phase2A）：memory_inject 门控，默认关 = 不注入。
+    context_blocks: list = []
+    memory_meta: dict = {}
+    if dd.get("memory_inject"):
+        anchor = "\n".join(x for x in (problem, context) if x)
+        rr = MemoryProvider.from_store().retrieve(
+            _ContextQuery(text=anchor, top_k=int(dd.get("memory_recall_top_k", 5)))
+        )
+        context_blocks = rr.blocks
+        memory_meta = {"provider": rr.provider, **rr.meta}
     engine = _build_consult_engine(dd)
     report = await engine.consult(
         ConsultRequest(
@@ -1331,6 +1342,7 @@ async def consult_problem(
         max_input_chars=input_limit,
         max_cost_usd=cost_limit,
         effort=dd.get("effort"),
+        context_blocks=context_blocks,
     )
     result = report.to_dict()
     result["panel"] = [entry["label"] for entry in panel_used]
@@ -1346,6 +1358,7 @@ async def consult_problem(
         "route_warnings": route_info["warnings"],
         "ambiguous_models": route_info["ambiguous_models"],
     }
+    result["memory"] = memory_meta
     # 只记录 consult 元数据与 advice id，不记录 prompt/问题正文/advice 全文。
     reviews_db.record_consultation(result)
     return result

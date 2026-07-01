@@ -49,6 +49,8 @@ _BUILTINS = {
     "consult_mode": None,
     "consult_max_input_chars": 24000,
     "consult_max_cost_usd": None,
+    "memory_inject": False,
+    "memory_recall_top_k": 5,
     "planner_panel": [],
     "planner_max_input_chars": 24000,
     "planner_max_cost_usd": None,
@@ -134,6 +136,8 @@ def _apply_config_layer(result: dict[str, dict[str, Any]], cfg: dict[str, Any], 
 
 
 def _coerce(key: str, val: str):
+    if key == "memory_inject":
+        return val.strip().lower() in ("1", "true", "yes", "on")
     if key in ("temperature", "timeout", "max_cost_usd", "consult_max_cost_usd", "planner_max_cost_usd"):
         try:
             return float(val)
@@ -146,6 +150,7 @@ def _coerce(key: str, val: str):
         "min_compressed_chars",
         "consult_max_input_chars",
         "planner_max_input_chars",
+        "memory_recall_top_k",
     ):
         try:
             return int(val)
