@@ -20,6 +20,9 @@ from pathlib import Path
 
 from brainregion.server import review_document
 
+# eval 子命令单独编排（不走 review_document；它直接调 engine 做 A/B 隔离）
+from brainregion.eval import cli as eval_cli
+
 
 def _read_text_input(args) -> str:
     """plan/doc 输入优先级：--text > 文件路径 > stdin(-)。"""
@@ -75,11 +78,214 @@ def build_parser() -> argparse.ArgumentParser:
                        choices=["markdown", "adr", "rfc", "config"])
     _add_review_args(p_doc)
 
+    p_eval = sub.add_parser("eval", help="跑评测 harness（bootstrap 尺子：retrieve off/on/garbage + 盲评）")
+    p_eval.add_argument("fixtures_dir", help="fixtures 目录（*.yaml 任务，每文件一个 EvalTask 或 list）")
+    p_eval.add_argument("--adapter", default="auto", choices=["auto", "unity", "generic"])
+    p_eval.add_argument("--panel", nargs="*", default=None, help="review panel 覆盖（建议单便宜模型控成本）")
+    p_eval.add_argument("--dimensions", nargs="*", default=None)
+    p_eval.add_argument(
+        "--variants", default="retrieve_off:0,retrieve_on:5,retrieve_garbage:5g",
+        help="变体 name:k[,..]，k 后缀 g 或第三段 g = garbage 负对照",
+    )
+    p_eval.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
+    p_eval.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+    p_eval.add_argument("--max-cost-usd", type=float, default=None)
+    p_eval.add_argument("--rubric", default=None, help="rubric 文件（默认 eval/rubrics/review_v1.md）")
+    p_eval.add_argument("--export", default=None, help="导出本次 run 为 JSONL 路径")
+    p_eval.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_eval.add_argument("--output-file", default=None)
+
+    p_cal = sub.add_parser("calibrate", help="judge 校准：用 gold 对测盲评 judge 能否稳定排序 good>bad")
+    p_cal.add_argument("gold", help="gold YAML 文件或目录（每条：id/failure_mode/task/good/bad/note）")
+    p_cal.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
+    p_cal.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+    p_cal.add_argument("--threshold", type=float, default=0.7, help="agreement 达标阈值（默认 0.7）")
+    p_cal.add_argument("--rubric", default=None, help="rubric 文件（默认 review_v1.md；--advice 用 advice_v1.md）")
+    p_cal.add_argument("--advice", action="store_true",
+                       help="校准 advice judge（outcome eval 用；落 CalibrationRecord，gate 前置）")
+    p_cal.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_cal.add_argument("--output-file", default=None)
+
+    p_route = sub.add_parser("routing", help="量 wake_gate 路由精度（A=no_defense vs B=full，免费不调模型）")
+    p_route.add_argument("fixtures_dir", help="fixtures 目录（*.yaml 任务，需带 gold_regions）")
+    p_route.add_argument("--regions-dir", default=None, help="region yaml 目录（默认内置 REGIONS_DIR）")
+    p_route.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_route.add_argument("--output-file", default=None)
+
+    p_out = sub.add_parser(
+        "outcome",
+        help="量 wake_gate→consult 建议质量（A=default vs B=routed，真调模型+盲评+gate）",
+    )
+    p_out.add_argument("fixtures_dir", help="fixtures 目录（*.yaml consult 任务，需带 gold_regions）")
+    p_out.add_argument("--adapter", default="auto", choices=["auto", "unity", "generic"])
+    p_out.add_argument("--panel", nargs="*", default=None, help="consult panel 覆盖（建议单便宜模型控成本）")
+    p_out.add_argument("--judges", nargs="*", default=None, help="judge 模型列表（默认 normalizer_model）")
+    p_out.add_argument("--effort", default=None, choices=["low", "medium", "high", "xhigh", "max"])
+    p_out.add_argument("--max-cost-usd", type=float, default=None)
+    p_out.add_argument("--rubric", default=None, help="rubric 文件（默认 eval/rubrics/advice_v1.md）")
+    p_out.add_argument("--regions-dir", default=None, help="region yaml 目录（默认内置 REGIONS_DIR）")
+    p_out.add_argument("--export", default=None, help="导出本次 run 为 JSONL 路径")
+    p_out.add_argument("--additive", action="store_true",
+                       help="加 routed_additive 变体（叠加式映射：base ∪ region 专题）做 3-way A/B")
+    p_out.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
+    p_out.add_argument("--output-file", default=None)
+
     return parser
 
 
+def _eval_markdown(result: dict) -> str:
+    """eval 汇总的简易 markdown 渲染（json 是主输出）。"""
+    s = result.get("summary", {})
+    pv = s.get("per_variant", {})
+    lines = [
+        f"# Eval run {result.get('run_id', '')}", "",
+        f"tasks={result.get('n_tasks')} variants={result.get('variants')} "
+        f"judges={result.get('judge_models')}", "",
+    ]
+    for name, m in pv.items():
+        lines.append(
+            f"- **{name}**: useful_rate={m.get('useful_advice_rate')} "
+            f"cost/useful={m.get('cost_per_useful_advice')} "
+            f"mean_overall={m.get('mean_overall')} "
+            f"p50={m.get('latency_p50_ms')}ms p95={m.get('latency_p95_ms')}ms"
+        )
+    sanity = s.get("sanity", {})
+    if sanity.get("errors"):
+        lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
+    if sanity.get("warnings"):
+        lines += ["", "## ⚠️ Sanity warnings"] + [f"- {w}" for w in sanity["warnings"]]
+    return "\n".join(lines)
+
+
+def _calibrate_markdown(result: dict) -> str:
+    """calibrate 汇总的简易 markdown 渲染（review + advice 两种 summary 都兼容）。"""
+    s = result.get("summary", {})
+    verdict = "✅ 校准达标" if s.get("calibrated") else "❌ 未达标（judge/rubric 需调）"
+    lines = [
+        f"# Calibrate {result.get('run_id', '')}", "",
+        f"judges={result.get('judge_models')} pairs={result.get('n_pairs')} threshold={s.get('threshold')}",
+        f"agreement={s.get('agreed')}/{s.get('total')} = {s.get('agreement_rate')} → {verdict}",
+    ]
+    if "wilson_lower" in s:
+        lines.append(f"wilson_lower={s.get('wilson_lower')} tie_rate={s.get('tie_rate')}（下界过门槛才 calibrated；n 小不硬放行）")
+    lines += ["", "## 按 failure_mode"]
+    for fm, rate in (s.get("per_failure_mode") or {}).items():
+        lines.append(f"- {fm}: {rate}")
+    if s.get("per_metric"):
+        lines += ["", "## 按 metric"] + [
+            f"- {m}: {r if isinstance(r, (int, float)) else r.get('agreement')}"
+            for m, r in s["per_metric"].items()
+        ]
+    if s.get("penalty_metrics"):
+        lines += ["", "## penalty metrics（lower=better，diagnostic）"] + [
+            f"- {m}: correct_direction={r.get('correct_direction_rate')}"
+            for m, r in s["penalty_metrics"].items()
+        ]
+    if s.get("wrong_pairs"):
+        lines += ["", "## ❌ 错判（good 未 > bad）"] + [f"- {w}" for w in s["wrong_pairs"]]
+    return "\n".join(lines)
+
+
+def _routing_markdown(result: dict) -> str:
+    """routing 汇总的简易 markdown 渲染。"""
+    s = result.get("summary", {})
+    pv = s.get("per_variant", {})
+    lines = [
+        f"# Routing eval {result.get('run_id', '')}", "",
+        f"tasks={result.get('n_tasks')} variants={result.get('variants')}（A=no_defense vs B=full）", "",
+        "| variant | precision | recall | missed_wake_rate | false_wake_rate |",
+        "|---|---|---|---|---|",
+    ]
+    for name, m in pv.items():
+        lines.append(
+            f"| {name} | {m.get('precision')} | {m.get('recall')} | "
+            f"{m.get('missed_wake_rate')} | {m.get('false_wake_rate')} |"
+        )
+    sanity = s.get("sanity", {})
+    if sanity.get("errors"):
+        lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
+    if sanity.get("warnings"):
+        lines += ["", "## ⚠️ Sanity warnings"] + [f"- {w}" for w in sanity["warnings"]]
+    return "\n".join(lines)
+
+
+def _outcome_markdown(result: dict) -> str:
+    """outcome 汇总的简易 markdown 渲染（json 是主输出）。"""
+    s = result.get("summary", {})
+    pv = s.get("per_variant", {})
+    gate = result.get("gate", {})
+    lines = [
+        f"# Outcome eval {result.get('run_id', '')}", "",
+        f"tasks={result.get('n_tasks')} variants={result.get('variants')} "
+        f"judges={result.get('judge_models')} "
+        f"overlap(routed≡default)={s.get('routed_default_overlap_rate')}", "",
+        "| variant | useful_rate | cost/useful | inference$ | missed_wake | missed_critical | p95ms |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name, m in pv.items():
+        lines.append(
+            f"| {name} | {m.get('useful_advice_rate')} | {m.get('cost_per_useful_advice')} | "
+            f"{m.get('inference_cost_usd')} | {m.get('missed_wake_rate')} | "
+            f"{m.get('missed_critical_total')} | {m.get('latency_p95_ms')} |"
+        )
+    lines += ["", f"## Gate: {gate.get('decision')}"]
+    diag = gate.get("diagnostics") or {}
+    if diag.get("pilot"):
+        lines.append(f"_pilot 模式：有效 n={diag.get('effective_n')} < formal_min_n，不宣称可信闸门_")
+    for r in (gate.get("reasons") or []):
+        lines.append(f"- {r}")
+    ci_block = []
+    for label, key in (("cost_ratio", "cost_ratio_ci"), ("useful_delta", "useful_delta_ci"),
+                       ("missed_critical_delta", "missed_critical_delta_ci")):
+        ci = diag.get(key) or {}
+        if ci.get("point") is not None:
+            ci_block.append(
+                f"- {label}: point={round(ci['point'], 4)} CI=[{round(ci['low'], 4)}, {round(ci['high'], 4)}]"
+                f" eff_rate={ci.get('effective_rate')}"
+            )
+    if ci_block:
+        lines += ["", "## Bootstrap CI（估计量层，per metric 独立流）"] + ci_block
+    sanity = s.get("sanity", {})
+    if sanity.get("errors"):
+        lines += ["", "## ❌ Sanity errors"] + [f"- {e}" for e in sanity["errors"]]
+    if sanity.get("warnings"):
+        lines += ["", "## ⚠️ Sanity warnings"] + [f"- {w}" for w in sanity["warnings"]]
+    return "\n".join(lines)
+
+
 def main() -> None:
+    # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
+    # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — stdout 不可重配（如被捕获）时静默
+        pass
     args = build_parser().parse_args()
+    if args.command == "eval":
+        result = asyncio.run(eval_cli.run(args))
+        if args.output_format != "json":
+            result["rendered"] = _eval_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "calibrate":
+        runner = eval_cli.run_calibrate_advice if getattr(args, "advice", False) else eval_cli.run_calibrate
+        result = asyncio.run(runner(args))
+        if args.output_format != "json":
+            result["rendered"] = _calibrate_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "routing":
+        result = eval_cli.run_routing(args)  # 同步、不调模型
+        if args.output_format != "json":
+            result["rendered"] = _routing_markdown(result)
+        _emit(result, args)
+        return
+    if args.command == "outcome":
+        result = asyncio.run(eval_cli.run_outcome(args))
+        if args.output_format != "json":
+            result["rendered"] = _outcome_markdown(result)
+        _emit(result, args)
+        return
     common = dict(
         adapter=args.adapter, panel=args.panel, dimensions=args.dimensions,
         output_format=args.output_format, retrieve_top_k=args.retrieve_top_k,

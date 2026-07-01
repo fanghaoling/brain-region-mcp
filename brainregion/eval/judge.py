@@ -1,0 +1,227 @@
+"""盲评 judge：脱敏 → 确定性打乱 → backend.complete → 解析。
+
+脱敏（防身份泄漏，对抗复盘最关键一条）：给 judge 前剥离 case_ref / knowledge_hit / 标题里的
+[CASE-ID] 前缀 / retrieved_cases——只留 severity/title/evidence/suggestion。否则 retrieve_on/
+retrieve_garbage 的输出带案例引用，judge 一眼认出变体身份。
+
+盲靠 prompt 层打乱：变体名 → [X,Y,Z] 标签，按 task_id 确定性 seed（同任务可复现），记录映射。
+
+多 judge-ready：judge_task 接收单个 judge_entry，runner 对 judge 列表循环（MVP len=1）。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import random
+import re
+
+from ..core.stages.parse import extract_json_object
+from .schema import BlindJudgement
+
+logger = logging.getLogger("brainregion.eval.judge")
+
+_CASE_PREFIX_RE = re.compile(r"^\[[^\]]*\]\s*")
+
+# 默认期望 judge 返回的字段；scores 是自由 dict，rubric 可多回 precision/recall/novelty/...（预留）
+RUBRIC_DEFAULT = """你是盲评评审。下面给出对【同一份待审查内容】的若干份候选审查输出，标签为 X / Y / Z（已打乱，你不知道哪个是哪种方法）。
+
+对每一份输出，独立打分，输出严格 JSON：
+{"X": {"useful": int, "correct": int, "harmful": int, "missed_critical": int, "overall": int}, "Y": {...}, "Z": {...}}
+
+字段含义：
+- useful：有价值的建议条数（主指标）
+- correct：正确建议条数（正确 ≠ 被采纳）
+- harmful：错误/有害建议条数
+- missed_critical：本应指出却遗漏的关键问题数（硬门槛方向）
+- overall：整体质量 1-5
+
+可选额外字段（能填就填，填不出可省略）：precision, recall, novelty, coverage, conflict, redundancy（0-1 浮点）。
+只看建议实质（severity/title/evidence/suggestion），不要猜测输出来自哪种方法。"""
+
+
+def _clean_title(title: str) -> str:
+    return _CASE_PREFIX_RE.sub("", title or "").strip()
+
+
+def desensitize(report_dict: dict) -> list[dict]:
+    """把 report 拍平成干净 finding 列表：剥离 case_ref / 知识库引用 / [CASE-ID] 标题前缀。
+
+    只留 severity/title/evidence/suggestion——judge 据此打分，看不到变体身份线索。
+    """
+    out: list[dict] = []
+    for bucket in ("consensus", "majority"):
+        for cf in report_dict.get(bucket, []) or []:
+            out.append({
+                "severity": cf.get("severity", ""),
+                "title": _clean_title(cf.get("canonical_title") or cf.get("title", "")),
+                "evidence": cf.get("evidence_quote", ""),
+                "suggestion": cf.get("suggestion", ""),
+            })
+    for model, fs in (report_dict.get("individual") or {}).items():
+        for f in fs or []:
+            out.append({
+                "severity": f.get("severity", ""),
+                "title": _clean_title(f.get("title", "")),
+                "evidence": f.get("evidence_quote", ""),
+                "suggestion": f.get("suggestion", ""),
+            })
+    return out
+
+
+def _seed(task_id: str) -> int:
+    return int(hashlib.sha256((task_id or "").encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _labels(n: int) -> list[str]:
+    return [chr(ord("X") + i) for i in range(n)]
+
+
+def _build_user(labeled: dict[str, list[dict]], task_context: str = "") -> str:
+    parts = []
+    if task_context:
+        parts.append(f"【待审查内容摘要】\n{task_context.strip()}\n")
+    for label, findings in labeled.items():
+        parts.append(f"=== 输出 {label} ===")
+        if not findings:
+            parts.append("（无建议）")
+        for i, f in enumerate(findings, 1):
+            parts.append(
+                f"{i}. [{f['severity']}] {f['title']}\n   evidence: {f['evidence']}\n   建议: {f['suggestion']}"
+            )
+    parts.append("\n请按 schema 输出各标签的 JSON 评分。")
+    return "\n".join(parts)
+
+
+_ADVICE_FIELDS = ("summary", "likely_causes", "next_experiments", "solution_options", "risks", "recommended_plan")
+_ADVICE_LABELS = (
+    ("likely_causes", "可能原因"), ("next_experiments", "下一步实验"),
+    ("solution_options", "可选方案"), ("risks", "风险"), ("recommended_plan", "推荐计划"),
+)
+
+
+def desensitize_advice(report_dict: dict) -> list[dict]:
+    """把 ConsultReport 拍平成中性 advice 列表，剥离 model/consultant/routing 等身份字段。
+
+    保留聚合层建议实质（summary/likely_causes/next_experiments/solution_options/risks/
+    recommended_plan——这些本身就是推理产物：假设/实验/备选/风险/计划）；聚合层为空时回退到逐条
+    individual（同样剥身份）。剥离 individual[].model/consultant、routing、panel、consultation_id、
+    usage、budget、guard——judge 看不到变体身份。无隐藏 CoT trace（consult 输出本无此字段）。
+    """
+    out: list[dict] = []
+    top = {k: report_dict.get(k, [] if k != "summary" else "") for k in _ADVICE_FIELDS}
+    if any(top.values()):
+        out.append(top)
+    else:
+        for a in report_dict.get("individual") or []:
+            item = {k: a.get(k, [] if k != "summary" else "") for k in _ADVICE_FIELDS}
+            if any(item.values()):
+                out.append(item)
+    return out
+
+
+def _build_advice_user(labeled: dict[str, list[dict]], task_context: str = "") -> str:
+    parts: list[str] = []
+    if task_context:
+        parts.append(f"【会诊问题】\n{task_context.strip()}\n")
+    for label, advices in labeled.items():
+        parts.append(f"=== 候选建议 {label} ===")
+        if not advices:
+            parts.append("（无建议）")
+            continue
+        for i, a in enumerate(advices, 1):
+            parts.append(f"建议 {i}:")
+            if a.get("summary"):
+                parts.append(f"  摘要: {a['summary']}")
+            for fld, name in _ADVICE_LABELS:
+                val = a.get(fld)
+                if val:
+                    parts.append(f"  {name}: {val}")
+    parts.append("\n请按 schema 输出各标签的 JSON 评分。")
+    return "\n".join(parts)
+
+
+async def _blind_score(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict,
+    desens_fn, build_user_fn, task_context: str = "",
+) -> list[BlindJudgement]:
+    """盲评共享骨架：desens_fn(rep)->list[dict] + build_user_fn(labeled, ctx)->str。
+
+    脱敏 → 确定性打乱（_seed(task_id)，同任务可复现）→ backend.complete → extract_json_object → 还原变体。
+    """
+    variants = list(variant_outputs.keys())
+    # 1. 脱敏
+    desens: dict[str, list[dict]] = {}
+    for v in variants:
+        try:
+            rep = json.loads(variant_outputs[v]) if variant_outputs[v] else {}
+        except Exception:  # noqa: BLE001
+            rep = {}
+        desens[v] = desens_fn(rep)
+    # 2. 确定性打乱 variant → label，记录映射
+    order = list(variants)
+    random.Random(_seed(task_id)).shuffle(order)
+    labels = _labels(len(order))
+    label_to_variant = dict(zip(labels, order))
+    labeled = {lab: desens[v] for lab, v in label_to_variant.items()}
+    # 3. 调 judge
+    user = build_user_fn(labeled, task_context)
+    resp = await backend.complete(
+        model=judge_entry["model"],
+        system=rubric_text or RUBRIC_DEFAULT,
+        user=user,
+        temperature=0.1,
+        max_tokens=2048,
+        endpoint_id=judge_entry.get("endpoint_id"),
+    )
+    judge_cost = float(resp.cost_usd) if getattr(resp, "cost_usd", None) else 0.0
+    # 4. 解析 → 还原变体
+    raw = extract_json_object(resp.content) if resp.ok else None
+    results: list[BlindJudgement] = []
+    for lab, v in label_to_variant.items():
+        scores = (raw or {}).get(lab) if isinstance(raw, dict) else None
+        if not isinstance(scores, dict):
+            scores = {}
+        results.append(BlindJudgement(
+            run_id=run_id, task_id=task_id,
+            judge_id=judge_entry["label"], judge_model=judge_entry["model"],
+            rubric_hash=rubric_hash, variant=v, blind=True,
+            scores=scores, reason="" if resp.ok else (resp.error or "parse_failed"),
+            judge_cost_usd=judge_cost,
+        ))
+    return results
+
+
+async def judge_task(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
+) -> list[BlindJudgement]:
+    """review findings 盲评（desensitize + _build_user）。"""
+    return await _blind_score(
+        backend, judge_entry, rubric_text, rubric_hash, run_id, task_id,
+        variant_outputs, desensitize, _build_user, task_context,
+    )
+
+
+async def judge_task_advice(
+    backend, judge_entry: dict, rubric_text: str, rubric_hash: str,
+    run_id: str, task_id: str, variant_outputs: dict, task_context: str = "",
+) -> list[BlindJudgement]:
+    """consult advice 盲评（desensitize_advice + _build_advice_user）。供 outcome eval。"""
+    return await _blind_score(
+        backend, judge_entry, rubric_text, rubric_hash, run_id, task_id,
+        variant_outputs, desensitize_advice, _build_advice_user, task_context,
+    )
+
+
+def advice_prompt_skeleton_hash(rubric_text: str) -> str:
+    """校准 artifact 的 prompt 指纹：hash(rubric + 渲染的 advice-judge prompt skeleton + advice 字段表)。
+
+    自动捕捉 rubric / `_build_advice_user` 模板 / `desensitize_advice` 字段表的任何变更，
+    **无需手维护版本常量**（吸收 GPT 建议 1：防 template 改了常量忘更新 → 校准误 pass）。
+    """
+    placeholder = {"X": [{f: "x" for f in _ADVICE_FIELDS}]}
+    skeleton = _build_advice_user(placeholder, task_context="ctx")
+    blob = f"{rubric_text or ''}\n===SKELETON===\n{skeleton}\n===FIELDS===\n{list(_ADVICE_FIELDS)}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]

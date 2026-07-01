@@ -1,0 +1,197 @@
+# Outcome eval 任务集：每个是真实会诊问题（consult）。gold_regions 给 wake_gate 的 wake_metrics
+# （gate 判定 missed_wake_rate 用），judge 看不到 gold。覆盖有 specialist 的 region + 1 个回退对照。
+# A=default（debugger/architect/critic）；B=routed（wake_gate 派生）。
+# task_type=consult 区分于 review routing 任务。judge 按 advice_v1.md 盲评 useful/missed_critical。
+
+- id: oc-001-debugging-flaky
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Flaky integration test: intermittent AssertionError in the payment reconciliation job, only on CI, never locally. Race condition suspected around a DB reconnect."
+    why_stuck: "Cannot reproduce locally; CI logs show the failure immediately after a DB reconnect."
+    question: "What are the most likely race conditions, and what is the smallest experiment to confirm?"
+    current_attempt: "Added sleeps around the reconnect; still flaky."
+    goal: "Find root cause + one confirming experiment."
+  gold_regions: [debugging]
+  notes: "B 应唤醒 debugging→[debugger]（比 A 的三专家更聚焦）。"
+
+- id: oc-002-security-injection
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Reviewing a REST endpoint that builds SQL from user input before launch. Need to challenge the authz boundary and injection surface—parameterized queries alone may not cover 越权 (privilege escalation)."
+    why_stuck: "Not sure if parameterized queries alone close the 越权 and injection risks."
+    question: "Where are the real privilege-escalation and injection risks, and what tests prove they're closed?"
+  gold_regions: [security]
+  notes: "security 无同名 consultant→[challenge,critic]。sqli/越权 在 security 的 sentinel_keywords，
+    wake_gate 默认 full 配置（sentinel=True）才兜住——outcome eval 用默认配置。"
+
+- id: oc-003-perf-ecs
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Unity Burst job system: GC allocations in the hot path (NativeArray + SystemAPI) cause frame hitches. Need latency-focused specialist plus ECS-aware critique of the job schedule."
+    why_stuck: "Profiling shows per-frame allocations in a Burst job; not sure which EntityCommandBuffer pattern removes them."
+    goal: "Cut hot-path allocations without breaking the Jobs schedule."
+  gold_regions: [performance, unity_ecs]
+  notes: "联合唤醒→consultants=[performance,critic]∪[unity_ecs]=[performance,critic,unity_ecs]。"
+
+- id: oc-004-planning-migration
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Zero-downtime data migration across sharded stores: decompose into milestones, rollback plan, risks, and testable acceptance criteria."
+    why_stuck: "Unsure how to order the cutover so rollback is always possible mid-migration."
+    goal: "A plan with testable acceptance gates and a rollback path."
+  gold_regions: [planning]
+  notes: "planning→[architect,test_designer,critic]。"
+
+- id: oc-005-research-fallback
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Choosing between two streaming architectures; need to research the tradeoffs across documentation and recent papers before committing. Want a sanity check on which fits our latency budget."
+    question: "Which option is the better fit, and what evidence should I weigh?"
+    goal: "A sanity check on the tradeoff analysis."
+  gold_regions: [research]
+  notes: "research 无 consult specialist→B 必须回退默认（mapping_source=fallback）。
+    对照：测'唤醒但无 specialist 可派'路径不比 A 差（B≡A）。research triggers: research/documentation/paper/调研。
+    注：memory region 指项目自有的反馈/知识沉淀（mark_finding/advice feedback），不是 cache/LRU——别混淆。"
+
+# ===== 扩到 ~20（pilot 带，吸收 I9） =====
+
+- id: oc-006-debugging-oom
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Production failure after deploy: OOM, DB connections stuck and not released. Bug in the pool cleanup path; can't reproduce the error in staging, only under load."
+    why_stuck: "Can't repro in staging; only happens under sustained load."
+    question: "Where's the connection leak, and what's the smallest repro?"
+  gold_regions: [debugging]
+  notes: "debugging→[debugger]。crash/bug/leak。"
+
+- id: oc-007-debugging-deadlock
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Bug: intermittent deadlock between two locks in the order service; stuck threads under certain interleavings, hard to reproduce in tests."
+    question: "What lock ordering fix removes the deadlock without hurting throughput?"
+  gold_regions: [debugging]
+  notes: "debugging→[debugger]。deadlock/intermittent。"
+
+- id: oc-008-debugging-drift
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Bug: subtle data inconsistency between primary and a read replica; a failure that's hard to reproduce, only for one tenant's workload."
+    question: "Is this replication lag exposed as stale reads, or a real divergence bug?"
+  gold_regions: [debugging]
+  notes: "debugging→[debugger]。inconsistency/bug。"
+
+- id: oc-009-perf-p99
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "API p99 latency 慢，spiking under load; bottleneck unclear—could be DB, serialization, or the sync client."
+    goal: "Identify the hotspot and propose a fix path."
+  gold_regions: [performance]
+  notes: "performance→[performance,critic]。latency/bottleneck/性能。"
+
+- id: oc-010-perf-throughput
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Batch job throughput dropped after data volume doubled; need to find the 性能 hotspot in the pipeline."
+    goal: "Restore throughput; weigh parallelism vs memory."
+  gold_regions: [performance]
+  notes: "performance→[performance,critic]。throughput/hotspot/性能。"
+
+- id: oc-011-security-authz
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Possible auth bypass via header injection on the admin endpoint; need to challenge the 越权 surface before launch."
+    question: "Where are the real privilege-escalation risks, and what tests prove they're closed?"
+  gold_regions: [security]
+  notes: "security→[challenge,critic]。越权/injection sentinel。"
+
+- id: oc-012-security-secret
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Secrets may be 泄露 into logs and error traces; need to audit and redact before the next release."
+    question: "What's the full set of leak vectors and a redaction plan?"
+  gold_regions: [security]
+  notes: "security→[challenge,critic]。secret/leak/泄露 sentinel。"
+
+- id: oc-013-planning-split
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Plan splitting the monolith into two services with minimal downtime; need milestones, rollback, and acceptance gates."
+    goal: "A reversible migration plan with testable gates."
+  gold_regions: [planning]
+  notes: "planning→[architect,test_designer,critic]。迁移/rollout/migration。"
+
+- id: oc-014-planning-bluegreen
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Blue-green deploy for a stateful service; need a rollback plan and a cutover checklist before 上线."
+    goal: "Safe rollout with instant rollback."
+  gold_regions: [planning]
+  notes: "planning→[architect,test_designer,critic]。rollout/上线/rollback。"
+
+- id: oc-015-unity-syncpoint
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Unity Burst job sync point in the ECS subsystem causing main-thread stall; Entity dependency chain blocks the schedule."
+    goal: "Remove the sync point without breaking the Jobs schedule or performance."
+  gold_regions: [unity_ecs, performance]
+  notes: "unity_ecs+performance→[unity_ecs]∪[performance,critic]。Burst/ECS/job/main-thread。"
+
+- id: oc-016-research-mq
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Research and compare two message-queue options across their documentation and benchmarks before committing."
+    question: "Which fits our latency + ordering needs, and what evidence should I weigh?"
+  gold_regions: [research]
+  notes: "research→[]（fallback）。research/documentation/调研。"
+
+- id: oc-017-memory-feedback
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Deciding when to mark_finding vs discard in our advice feedback loop; how should knowledge 沉淀 and confidence decay work over time."
+    question: "What's a sound persistence + decay policy that doesn't rot the knowledge base?"
+  gold_regions: [memory]
+  notes: "memory→[]（fallback）。memory region = 项目反馈/知识沉淀（mark_finding/feedback/沉淀/knowledge）。"
+
+- id: oc-018-review-checklist
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Pre-merge code review of a large PR; want a sanity check on the review checklist and what's likely missed."
+    question: "What should the reviewer focus on, and what's commonly overlooked?"
+  gold_regions: [review]
+  notes: "review→[]（fallback）。review region 走 review 管线，这里测 consult 回退。"
+
+- id: oc-019-perf-debug-regression
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "性能 regression that's actually a bug: a hot-path memory allocation that also causes a failure under load, hard to reproduce."
+    goal: "Find whether the fix is a perf optimization or a real leak bug."
+  gold_regions: [performance, debugging]
+  notes: "performance+debugging→[performance,critic]∪[debugger]。regression/bug/性能/leak。"
+
+- id: oc-020-planning-security-launch
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Plan the security-hardening rollout before launch: milestones, rollback path, scope, and challenge the authz/injection 越权 surface."
+    goal: "A launch plan that's both reversible and security-reviewed."
+  gold_regions: [planning, security]
+  notes: "planning+security→[architect,test_designer,critic]∪[challenge,critic]。rollout/launch/越权/injection。"

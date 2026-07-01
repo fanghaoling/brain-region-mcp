@@ -65,33 +65,29 @@ def _append_once(actions: list[dict], action: dict) -> None:
     actions.append(action)
 
 
-def suggest_workflow(
+def _build_actions(
+    region_ids: list[str],
+    confidence_by_id: dict[str, float],
     *,
-    goal: str = "",
-    problem: str = "",
-    context: str = "",
-    files: dict[str, str] | None = None,
-    top_k: int = 3,
-    min_score: int = 2,
-    regions_dir=REGIONS_DIR,
-) -> dict:
-    """Suggest explicit manual next steps from deterministic region routing."""
-    files = files or {}
-    routing = route_regions(
-        goal=goal,
-        problem=problem,
-        context=context,
-        files=files,
-        top_k=top_k,
-        min_score=min_score,
-        regions_dir=regions_dir,
-    )
-    selected = list(routing.get("selected", []))
-    selected_ids = _selected_region_ids(routing)
-    selected_set = set(selected_ids)
+    goal: str,
+    problem: str,
+    context: str,
+    files: dict[str, str],
+) -> list[dict]:
+    """Turn a set of region ids into explicit next-step actions.
+
+    Pure function over region ids + a confidence map; reused by suggest_workflow
+    (deterministic selected set) and wake_gate (woken set incl. sentinel/shadow).
+    Never calls models or tools; every action requires user approval.
+    """
+    selected_set = set(region_ids)
     actions: list[dict] = []
     combined_context = _base_text(context, problem)
     primary_problem = problem or goal or context
+
+    def _conf(*region_ids: str) -> float:
+        values = [confidence_by_id.get(rid, 0.0) for rid in region_ids]
+        return max(values) if values else 0.0
 
     if "planning" in selected_set:
         suggested_args: dict[str, Any] = {"goal": goal or problem or context}
@@ -106,7 +102,7 @@ def suggest_workflow(
                 reason="Planning Region matched: decompose the goal into milestones, tasks, risks, and acceptance criteria.",
                 suggested_args=suggested_args,
                 source_regions=["planning"],
-                confidence=_selected_confidence(routing, "planning"),
+                confidence=_conf("planning"),
             ),
         )
 
@@ -129,7 +125,7 @@ def suggest_workflow(
                 reason="Debugging Region matched: ask an external debugger for hypotheses and next experiments.",
                 suggested_args=suggested_args,
                 source_regions=source_regions,
-                confidence=_selected_confidence(routing, *source_regions),
+                confidence=_conf(*source_regions),
             ),
         )
 
@@ -152,7 +148,7 @@ def suggest_workflow(
                 reason="Performance Region matched: ask a performance specialist to focus on latency, allocation, throughput, or cost.",
                 suggested_args=suggested_args,
                 source_regions=source_regions,
-                confidence=_selected_confidence(routing, *source_regions),
+                confidence=_conf(*source_regions),
             ),
         )
 
@@ -171,7 +167,7 @@ def suggest_workflow(
                 reason="Security Region matched: challenge the design around secrets, permissions, privacy, or injection boundaries.",
                 suggested_args=suggested_args,
                 source_regions=["security"],
-                confidence=_selected_confidence(routing, "security"),
+                confidence=_conf("security"),
             ),
         )
 
@@ -190,7 +186,7 @@ def suggest_workflow(
                 reason="Unity ECS Region matched: ask the Unity ECS consultant for DOTS, Burst, Jobs, and data-oriented guidance.",
                 suggested_args=suggested_args,
                 source_regions=["unity_ecs"],
-                confidence=_selected_confidence(routing, "unity_ecs"),
+                confidence=_conf("unity_ecs"),
             ),
         )
 
@@ -215,12 +211,51 @@ def suggest_workflow(
                 reason=reason,
                 suggested_args=suggested_args,
                 source_regions=["review"],
-                confidence=_selected_confidence(routing, "review"),
+                confidence=_conf("review"),
             ),
         )
 
     actions.sort(
         key=lambda item: min(_REGION_ORDER.get(region, 999) for region in item.get("source_regions", [""]))
+    )
+    return actions
+
+
+def suggest_workflow(
+    *,
+    goal: str = "",
+    problem: str = "",
+    context: str = "",
+    files: dict[str, str] | None = None,
+    top_k: int = 3,
+    min_score: int = 2,
+    regions_dir=REGIONS_DIR,
+) -> dict:
+    """Suggest explicit manual next steps from deterministic region routing."""
+    files = files or {}
+    routing = route_regions(
+        goal=goal,
+        problem=problem,
+        context=context,
+        files=files,
+        top_k=top_k,
+        min_score=min_score,
+        regions_dir=regions_dir,
+    )
+    selected = list(routing.get("selected", []))
+    selected_ids = _selected_region_ids(routing)
+    confidence_by_id = {
+        str(region.get("id", "")): float(region.get("confidence", 0.0))
+        for region in selected
+        if region.get("id")
+    }
+    actions = _build_actions(
+        selected_ids,
+        confidence_by_id,
+        goal=goal,
+        problem=problem,
+        context=context,
+        files=files,
     )
     skipped = [
         {
