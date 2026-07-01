@@ -68,6 +68,34 @@ def test_resolve_variant_consultants_wake_all_reserved():
         _resolve_variant_consultants(OutcomeVariant("wake_all", "wake_all"), [], {})
 
 
+def test_resolve_variant_consultants_additive():
+    """routed_additive = base ∪ region 专题，base 在前、去重保序（ISS-009/formal NO_GO 修复）。"""
+    dd = {"consult_consultants": ["debugger", "critic"]}  # 对齐项目 config 基座
+    additive = OutcomeVariant("routed_additive", "routed_additive")
+
+    # performance→[performance,critic]：critic 在 base，去重 → base + performance
+    cons, src = _resolve_variant_consultants(additive, ["performance"], dd)
+    assert cons == ["debugger", "critic", "performance"] and src == "routed_additive"
+
+    # debugging→[debugger]：debugger 在 base，去重 → 仅 base（专题被 base 吸收）
+    cons, src = _resolve_variant_consultants(additive, ["debugging"], dd)
+    assert cons == ["debugger", "critic"] and src == "routed_additive"
+
+    # security→[challenge,critic]：critic 去重 → base + challenge
+    cons, src = _resolve_variant_consultants(additive, ["security"], dd)
+    assert cons == ["debugger", "critic", "challenge"]
+
+    # planning→[architect,test_designer,critic]：critic 去重 → base + architect + test_designer
+    cons, src = _resolve_variant_consultants(additive, ["planning"], dd)
+    assert cons == ["debugger", "critic", "architect", "test_designer"]
+
+    # 空 region（memory/无 woken）→ 仅 base（不回退标签，仍是 routed_additive）
+    cons, src = _resolve_variant_consultants(additive, ["memory"], dd)
+    assert cons == ["debugger", "critic"] and src == "routed_additive"
+    cons, src = _resolve_variant_consultants(additive, [], dd)
+    assert cons == ["debugger", "critic"]
+
+
 # ---------- advice 脱敏 ----------
 
 def test_desensitize_advice_strips_identity(monkeypatch):

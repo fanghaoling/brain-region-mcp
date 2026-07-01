@@ -22,6 +22,7 @@ from . import store
 from .judge import judge_task
 from .knowledge import GarbageKnowledgeProvider
 from .metadata import defaults_hash, git_sha, knowledge_hash, reviewer_hash
+from .prices import ensure_doc_prices_registered
 from .schema import EvalCaseRecord, EvalLedgerEntry, VariantSpec
 
 logger = logging.getLogger("brainregion.eval.runner")
@@ -201,6 +202,7 @@ async def run_eval(
     run_id: str, effort=None, max_cost_usd: float = 1.0, panel_override: list | None = None,
 ) -> tuple[list, list, EvalLedgerEntry]:
     endpoint_ids = set((_resolve_endpoints(dd.get("endpoints") or {}) or {}).keys())
+    ensure_doc_prices_registered()
     records: list[EvalCaseRecord] = []
     judgements: list = []
 

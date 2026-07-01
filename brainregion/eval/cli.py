@@ -27,7 +27,7 @@ from .routing import (
     routing_sanity,
     run_routing_eval,
 )
-from .outcome import DEFAULT_OUTCOME_VARIANTS, run_outcome_eval
+from .outcome import DEFAULT_OUTCOME_VARIANTS, OutcomeVariant, run_outcome_eval
 from .runner import build_engines, make_run_id, run_eval
 from .schema import CalibrationRecord, EvalTask, VariantSpec
 
@@ -276,7 +276,11 @@ async def run_outcome(args) -> dict:
     cost_per_useful_advice（roadmap §8 v5.5 主指标），evaluate_gate 出 GO/NO_GO/INCONCLUSIVE。
     """
     dd = _defaults_mod.apply()
-    variants = DEFAULT_OUTCOME_VARIANTS
+    variants = list(DEFAULT_OUTCOME_VARIANTS)
+    if getattr(args, "additive", False):
+        # 加 routed_additive（叠加式映射：base ∪ region 专题）做 3-way A/B
+        # ——唯一变量=映射方式（替换 vs 叠加），与 routed 共用 wake/panel/judge
+        variants.append(OutcomeVariant("routed_additive", "routed_additive"))
 
     endpoints_cfg = dd.get("endpoints") or {}
     endpoint_ids = set((_resolve_endpoints(endpoints_cfg) or {}).keys())

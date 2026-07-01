@@ -33,6 +33,7 @@ from ..server import (
 )
 from . import store
 from .judge import advice_prompt_skeleton_hash, judge_task_advice
+from .prices import ensure_doc_prices_registered
 from .metadata import defaults_hash, git_sha
 from .runner import aggregate_variant_stats
 from .schema import EvalCaseRecord, EvalLedgerEntry
@@ -63,8 +64,8 @@ REGION_CONSULTANTS: dict[str, list[str]] = {
 # 对齐 defaults.py consult_consultants（fallback 用，也是 A 臂的 default 面板）
 _DEFAULT_CONSULTANTS = ["debugger", "architect", "critic"]
 
-MappingSource = Literal["routed", "fallback", "default"]
-Strategy = Literal["default", "routed", "wake_all"]
+MappingSource = Literal["routed", "routed_additive", "fallback", "default"]
+Strategy = Literal["default", "routed", "routed_additive", "wake_all"]
 
 
 def consultants_for_regions(woken: list[str]) -> list[str]:
@@ -81,7 +82,14 @@ def consultants_for_regions(woken: list[str]) -> list[str]:
 def _resolve_variant_consultants(
     variant: "OutcomeVariant", woken: list[str], dd: dict,
 ) -> tuple[list[str], MappingSource]:
-    """变体 → (consultants, mapping_source)。default=A 静态默认；routed=B wake 派生，空并集回退。"""
+    """变体 → (consultants, mapping_source)。
+
+    - default=A：静态默认面板（config consult_consultants，前额叶常驻基座）。
+    - routed=B（**替换式**，原设计）：wake 派生的 region 专题专家**替换**基座；空并集回退默认。
+    - routed_additive=C（**叠加式**，ISS-009 + formal NO_GO 修复）：基座 **∪** region 专题专家，
+      base 在前、去重保序。模拟「前额叶常驻 + 运动皮层按需激活」——不丢通用互补性，对症增量。
+      这是 mapped ⊇ base 的超集：mapped = base + specialists。
+    """
     defaults = list(dd.get("consult_consultants") or _DEFAULT_CONSULTANTS)
     if variant.strategy == "default":
         return defaults, "default"
@@ -90,6 +98,13 @@ def _resolve_variant_consultants(
         if mapped:
             return mapped, "routed"
         return defaults, "fallback"
+    if variant.strategy == "routed_additive":
+        mapped = consultants_for_regions(woken)
+        out = list(defaults)  # base 在前
+        for c in mapped:      # 叠加 region 专题专家，去重
+            if c not in out:
+                out.append(c)
+        return out, "routed_additive"
     raise NotImplementedError("wake_all strategy 预留（roadmap §2）；follow-up")
 
 
@@ -555,6 +570,7 @@ async def run_outcome_eval(
     CI-aware evaluate_gate（前置校准校验）→ record_run。
     """
     engine, backend = build_outcome_engines(dd)
+    ensure_doc_prices_registered()
     endpoint_ids = set((_resolve_endpoints(dd.get("endpoints") or {}) or {}).keys())
     records: list[OutcomeRecord] = []
     judgements: list = []
