@@ -314,7 +314,7 @@ class _FakeConsultEngine:
     def __init__(self):
         self.backend = _FakeJudgeBackend()
 
-    async def consult(self, request, *, panel, consultants, max_cost_usd=None, effort=None, consultation_id=None):
+    async def consult(self, request, *, panel, consultants, max_cost_usd=None, effort=None, consultation_id=None, context_blocks=None):
         from brainregion.core.consult.report import ConsultAdvice, ConsultReport
         return ConsultReport(
             consultation_id="c-test",

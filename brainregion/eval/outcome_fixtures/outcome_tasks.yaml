@@ -13,7 +13,12 @@
     current_attempt: "Added sleeps around the reconnect; still flaky."
     goal: "Find root cause + one confirming experiment."
   gold_regions: [debugging]
-  notes: "B 应唤醒 debugging→[debugger]（比 A 的三专家更聚焦）。"
+  seed_memory:
+    - summary: "DB 重连后的竞态：reconnect 回调与 in-flight 事务交错"
+      details: "reconciliation 在 DB reconnect 后偶发 AssertionError；根因是 reconnect 回调与未完成事务交错。用 connection-bound semaphore 串行化 reconnect 与事务提交后稳定。"
+      triggers: ["flaky", "race", "reconnect", "AssertionError", "竞态", "重连", "intermittent"]
+      region: "debugging"
+  notes: "B 应唤醒 debugging→[debugger]（比 A 的三专家更聚焦）。seed_memory 给 routed+memory 正信号（race 经验命中）。"
 
 - id: oc-002-security-injection
   task_type: consult
@@ -77,7 +82,12 @@
     problem: "Bug: intermittent deadlock between two locks in the order service; stuck threads under certain interleavings, hard to reproduce in tests."
     question: "What lock ordering fix removes the deadlock without hurting throughput?"
   gold_regions: [debugging]
-  notes: "debugging→[debugger]。deadlock/intermittent。"
+  seed_memory:
+    - summary: "两把锁死锁：固定全局锁序消除循环等待"
+      details: "order service 两把锁在某些交错下死锁；根因 lockA→lockB 与 lockB→lockA 并存。固定全局锁序（始终先 A 后 B）+ tryLock 超时回退消除死锁，吞吐不变。"
+      triggers: ["deadlock", "lock", "intermittent", "死锁", "锁", "交错", "stuck"]
+      region: "debugging"
+  notes: "debugging→[debugger]。deadlock/intermittent。seed_memory 给 routed+memory 正信号（锁序经验命中）。"
 
 - id: oc-008-debugging-drift
   task_type: consult

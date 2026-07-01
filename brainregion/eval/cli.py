@@ -51,6 +51,7 @@ def load_tasks(fixtures_dir: str) -> list[EvalTask]:
                 difficulty=d.get("difficulty", ""),
                 input=d.get("input") or {},
                 gold_regions=[str(g) for g in (d.get("gold_regions") or [])],
+                seed_memory=list(d.get("seed_memory") or []),
                 notes=d.get("notes", ""),
                 frozen=bool(d.get("frozen", True)),
             ))
@@ -281,6 +282,13 @@ async def run_outcome(args) -> dict:
         # 加 routed_additive（叠加式映射：base ∪ region 专题）做 3-way A/B
         # ——唯一变量=映射方式（替换 vs 叠加），与 routed 共用 wake/panel/judge
         variants.append(OutcomeVariant("routed_additive", "routed_additive"))
+    if getattr(args, "memory", False):
+        # Phase2A 单变量：routed(control) vs routed+memory(treatment)，不跑 default
+        # （default vs routed 已在 Phase 1 定论）。memory 经 ContextProvider 召回注入 consult。
+        variants = [
+            OutcomeVariant("routed", "routed"),
+            OutcomeVariant("routed_memory", "routed", inject_memory=True),
+        ]
 
     endpoints_cfg = dd.get("endpoints") or {}
     endpoint_ids = set((_resolve_endpoints(endpoints_cfg) or {}).keys())

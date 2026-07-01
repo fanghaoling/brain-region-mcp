@@ -23,8 +23,11 @@ from typing import Literal
 
 from ..core.consult.report import ConsultReport
 from ..core.consult import ConsultRequest
+from ..core.context import ContextQuery
 from ..core.regions import REGIONS_DIR
 from ..core.wake.gate import wake_gate
+from ..memory import MemoryProvider
+from ..memory.base import ExperienceEvent
 from ..server import (
     _build_consult_engine,
     _normalize_panel,
@@ -112,6 +115,7 @@ def _resolve_variant_consultants(
 class OutcomeVariant:
     name: str
     strategy: Strategy = "default"
+    inject_memory: bool = False  # Phase2A：routed+memory 正交轴（不改 strategy，单变量 A/B）
 
 
 DEFAULT_OUTCOME_VARIANTS = [
@@ -182,6 +186,17 @@ def _build_request(task) -> ConsultRequest:
     )
 
 
+def _seed_to_event(m: dict) -> ExperienceEvent:
+    """fixture seed_memory dict → ExperienceEvent（eval 不读 DB，纯内存召回 = 防伪记忆）。"""
+    return ExperienceEvent(
+        id=str(m.get("id") or ""),
+        region=str(m.get("region") or ""),
+        summary=str(m.get("summary") or ""),
+        details=str(m.get("details") or ""),
+        triggers=[str(t) for t in (m.get("triggers") or [])],
+    )
+
+
 def _task_context(task) -> str:
     """给 judge 的会诊问题摘要（problem/why_stuck/question/goal）——判相关性/missing_critical 的锚。"""
     inp = task.input or {}
@@ -231,6 +246,7 @@ async def run_outcome_variant(
     engine, request: ConsultRequest, panel: list, consultants: list[str],
     variant: OutcomeVariant, mapping_source: MappingSource, shared_wake: dict,
     effort, max_cost_usd, run_id: str, task_id: str,
+    context_blocks: list | None = None,
 ) -> OutcomeRecord:
     t0 = time.perf_counter()
     wake_info = {
@@ -245,6 +261,7 @@ async def run_outcome_variant(
         report: ConsultReport = await engine.consult(
             request, panel=panel, consultants=consultants,
             max_cost_usd=max_cost_usd, effort=effort,
+            context_blocks=context_blocks or [],
         )
         dt = (time.perf_counter() - t0) * 1000.0
         wake_info["consultant_trace"] = _consultant_trace(consultants, report)
@@ -590,9 +607,17 @@ async def run_outcome_eval(
         variant_outputs: dict[str, str] = {}
         for v in variants:
             consultants, mapping_source = _resolve_variant_consultants(v, shared_wake["woken"], dd)
+            context_blocks: list = []
+            if getattr(v, "inject_memory", False):
+                # routed+memory 正交轴：从 task 冻结 seed 纯内存召回（不读 DB = 防伪记忆，§15.3 🔍）。
+                evs = [_seed_to_event(m) for m in (getattr(task, "seed_memory", None) or [])]
+                rr = MemoryProvider.from_records(evs).retrieve(
+                    ContextQuery(text=_task_context(task), top_k=int(dd.get("memory_recall_top_k", 5)))
+                )
+                context_blocks = rr.blocks
             rec = await run_outcome_variant(
                 engine, request, panel, consultants, v, mapping_source, shared_wake,
-                effort, max_cost_usd, run_id, task.id,
+                effort, max_cost_usd, run_id, task.id, context_blocks=context_blocks,
             )
             records.append(rec)
             store.record_case(rec.to_case_record())
@@ -615,10 +640,14 @@ async def run_outcome_eval(
     prompt_hash = advice_prompt_skeleton_hash(rubric_text)
     calib_ok = (not require_calibration) or _calibration_ok(
         judge_entries, rubric_hash, prompt_hash, gold_version)
-    gate = evaluate_gate(
-        records, judgements, variants, run_id=run_id,
-        calibration_ok=calib_ok, confidence=GateConfig().confidence,
-    )
+    # Phase2A：memory A/B 单变量——control=routed, treatment=routed_memory。
+    # 修 gate 静默：原调用漏传 control/treatment → 新 arm 对 GO/NO_GO 不可见（用默认 default/routed）。
+    has_memory = any(getattr(v, "inject_memory", False) for v in variants)
+    gate_kwargs = {"run_id": run_id, "calibration_ok": calib_ok, "confidence": GateConfig().confidence}
+    if has_memory:
+        gate_kwargs["control"] = "routed"
+        gate_kwargs["treatment"] = "routed_memory"
+    gate = evaluate_gate(records, judgements, variants, **gate_kwargs)
     summary["gate"] = gate
 
     entry = EvalLedgerEntry(
