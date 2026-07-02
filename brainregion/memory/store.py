@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from .. import reviews_db
 from .base import ExperienceEvent
+from .governance import ACTIVE, SUPERSEDED
 
 logger = logging.getLogger("brainregion.memory.store")
 
@@ -49,6 +50,17 @@ def _connect() -> sqlite3.Connection:
         conn.execute("ALTER TABLE experiences ADD COLUMN schema_version INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass  # 列已存在
+    # v6 stage 1 governance 字段（加性；旧行 → status=active / valid_until_ts=0 永不过期）。
+    for col, decl in (
+        ("status", "TEXT DEFAULT 'active'"),
+        ("valid_until_ts", "INTEGER DEFAULT 0"),
+        ("superseded_by", "TEXT DEFAULT ''"),
+        ("last_reviewed", "TEXT DEFAULT ''"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE experiences ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
     conn.execute("CREATE INDEX IF NOT EXISTS idx_exp_region ON experiences(region)")
     conn.commit()
     return conn
@@ -78,6 +90,10 @@ def _row_to_event(row: sqlite3.Row) -> ExperienceEvent:
         triggers=[str(t) for t in triggers],
         created_at=row["created_at"] or "",
         source=row["source"] or "",
+        status=row["status"] or ACTIVE,
+        valid_until_ts=int(row["valid_until_ts"] or 0),
+        superseded_by=row["superseded_by"] or "",
+        last_reviewed=row["last_reviewed"] or "",
     )
 
 
@@ -90,29 +106,83 @@ def record_experience(
     source: str = "",
     experience_id: str | None = None,
     created_at: str | None = None,
+    status: str = ACTIVE,
+    valid_until_ts: int = 0,
+    supersedes: str = "",
 ) -> dict:
-    """记录一条经验（append-only，UPSERT by id）。返回 {ok, id}。失败 warn 不抛。"""
+    """记录一条经验（append-only，UPSERT by id）。返回 {ok, id}。失败 warn 不抛。
+
+    v6 stage 1: ``status`` / ``valid_until_ts`` 治理字段;``supersedes=old_id`` 便利参数 →
+    记录新后调 ``mark_superseded(old, new)``(单一 UPDATE 真相源,不自己 UPDATE old)。
+    """
     summary = (summary or "").strip()
     if not summary:
         raise ValueError("summary 不能为空")
     ts = created_at or _now_iso()
     eid = experience_id or _new_id(summary, region, ts)
     triggers_json = json.dumps([str(t) for t in (triggers or [])], ensure_ascii=False)
+    last_reviewed = ts if status == ACTIVE else ""
     try:
         conn = _connect()
         conn.execute(
-            "INSERT INTO experiences(id, region, summary, details, triggers_json, created_at, source, schema_version) "
-            "VALUES(?,?,?,?,?,?,?,?) "
+            "INSERT INTO experiences(id, region, summary, details, triggers_json, created_at, source, "
+            "schema_version, status, valid_until_ts, superseded_by, last_reviewed) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  region=excluded.region, summary=excluded.summary, details=excluded.details, "
-            "  triggers_json=excluded.triggers_json, source=excluded.source",
-            (eid, region, summary[:2000], details[:8000], triggers_json, ts, source[:500], _SCHEMA_VERSION),
+            "  triggers_json=excluded.triggers_json, source=excluded.source, status=excluded.status, "
+            "  valid_until_ts=excluded.valid_until_ts, superseded_by=excluded.superseded_by, "
+            "  last_reviewed=excluded.last_reviewed",
+            (eid, region, summary[:2000], details[:8000], triggers_json, ts, source[:500], _SCHEMA_VERSION,
+             status, int(valid_until_ts or 0), "", last_reviewed),
         )
         conn.commit()
+        if supersedes:
+            mark_superseded(supersedes, eid)
         return {"ok": True, "id": eid}
     except Exception as e:  # noqa: BLE001
         logger.warning("record_experience 失败: %s", e)
         return {"ok": False, "id": eid, "error": str(e)}
+
+
+def set_experience_status(
+    id: str,
+    status: str,
+    *,
+    superseded_by: str | None = None,
+    valid_until_ts: int | None = None,
+) -> dict:
+    """更新一条经验的 status（人工治理）。status→active 时自动 stamp ``last_reviewed=now``（调用方不传）。
+
+    状态自由可逆（见 governance.py 状态图）：任意状态可互转,无 transition guard。
+    ``superseded_by`` / ``valid_until_ts`` 给了才更新,否则不动。返回 {ok, id}。失败 warn 不抛。
+    """
+    try:
+        conn = _connect()
+        sets = ["status=?"]
+        vals: list = [status]
+        if superseded_by is not None:
+            sets.append("superseded_by=?")
+            vals.append(superseded_by or "")
+        if valid_until_ts is not None:
+            sets.append("valid_until_ts=?")
+            vals.append(int(valid_until_ts or 0))
+        if status == ACTIVE:
+            sets.append("last_reviewed=?")
+            vals.append(_now_iso())
+        vals.append(id)
+        conn.execute(f"UPDATE experiences SET {', '.join(sets)} WHERE id=?", vals)
+        conn.commit()
+        return {"ok": True, "id": id}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("set_experience_status 失败: %s", e)
+        return {"ok": False, "id": id, "error": str(e)}
+
+
+def mark_superseded(old_id: str, new_id: str) -> dict:
+    """把 old 标 superseded（superseded_by=new）。单一 UPDATE 真相源：
+    record_experience.supersedes / MCP mark_superseded 都调它,不重复 UPDATE 逻辑。"""
+    return set_experience_status(old_id, SUPERSEDED, superseded_by=new_id)
 
 
 def list_experiences(region: str | None = None) -> list[ExperienceEvent]:

@@ -6,9 +6,9 @@ brain_region_reviews.db）；provider 把 ExperienceEvent 包成 ContextBlock(fr
 
 import 无 DB 副作用（_connect 只在 accessor 内调）。
 """
-from . import store
+from . import governance, store
 from .base import ExperienceEvent
 from .provider import MemoryProvider
 from .scope import MemoryScope
 
-__all__ = ["ExperienceEvent", "MemoryProvider", "MemoryScope", "store"]
+__all__ = ["ExperienceEvent", "MemoryProvider", "MemoryScope", "governance", "store"]

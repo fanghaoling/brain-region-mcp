@@ -13,7 +13,7 @@ retrieve 不调 LLM（§6）；ContextBlock.framing 恒为 "data"（存储型 pr
 from __future__ import annotations
 
 from ..core.context import ContextBlock, ContextQuery, RetrieveResult
-from . import store
+from . import governance, store
 from .base import ExperienceEvent
 from .scope import MemoryScope
 
@@ -69,6 +69,8 @@ class MemoryProvider:
         before = len(pool_all)
         pool = pool_all if scope is None else [e for e in pool_all if scope.matches(e.region)]
         after_scope = len(pool)
+        # governance 过滤(v6 stage 1):剔 superseded/wrong/expired。调 governance 不内联。
+        pool, gov_stats = governance.filter_events(pool)
         hits = store.search_from_records(pool, query.text, top_k)
 
         blocks = [
@@ -87,6 +89,7 @@ class MemoryProvider:
             meta={
                 "candidates_before_top_k": before,
                 "candidates_after_scope": after_scope,
+                **gov_stats,  # candidates_after_governance + removed_superseded/wrong/expired
                 "returned": len(blocks),
                 "scope": sorted(scope.regions) if scope is not None else None,
             },

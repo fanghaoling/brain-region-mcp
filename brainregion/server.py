@@ -56,7 +56,7 @@ from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E40
 from .core import ReviewDocument  # noqa: E402
 from .knowledge import YamlKnowledgeProvider  # noqa: E402
 from .core.context import ContextQuery as _ContextQuery  # noqa: E402
-from .memory import MemoryProvider, MemoryScope, store as memory_store  # noqa: E402
+from .memory import MemoryProvider, MemoryScope, governance, store as memory_store  # noqa: E402
 from .privacy import build_policy  # noqa: E402
 from .providers import LiteLLMBackend  # noqa: E402
 
@@ -1031,18 +1031,22 @@ def record_experience(
     triggers: list[str] | None = None,
     region: str = "",
     source: str = "",
+    status: str = "active",
+    valid_until_ts: int = 0,
+    supersedes: str = "",
 ) -> dict:
     """记录一条经验到 Experience Memory（append-only），供后续按关键词召回注入 consult context。
 
-    Phase2A：memory 脑区扶正的第一个 ContextProvider。summary 必填；triggers 是召回用的
-    关键词（词面命中）；region 可空（全局）。治理（标错/过期/confidence）defer——本工具只 append。
-    返回 {ok, id}，id 可供后续追溯。注入由 config memory_inject 门控（默认关）；召回检视
-    见 recall_experiences。
+    summary 必填；triggers 是召回关键词（词面命中）；region 可空（全局）。
+    v6 stage 1 治理：status(active|pending|superseded|wrong,默认 active)、valid_until_ts(Unix 秒,0=永不过期)、
+    supersedes(旧记忆 id——记录新后自动把旧记忆标 superseded)。返回 {ok, id}。
+    注入由 config memory_inject 门控（默认关）；召回检视见 recall_experiences；改状态见 set_experience_status。
     """
     try:
         return memory_store.record_experience(
             summary=summary, details=details, triggers=triggers or [],
-            region=region, source=source,
+            region=region, source=source, status=status,
+            valid_until_ts=valid_until_ts, supersedes=supersedes,
         )
     except ValueError:
         raise
@@ -1051,18 +1055,52 @@ def record_experience(
 
 
 @mcp.tool()
+def set_experience_status(
+    id: str,
+    status: str,
+    superseded_by: str = "",
+    valid_until_ts: int | None = None,
+) -> dict:
+    """更新一条经验的治理状态（v6 stage 1，人工纠错）。
+
+    status ∈ {active, pending, superseded, wrong}。自由可逆（误标可改回）：
+    status→active 时自动 stamp last_reviewed。superseded_by（status=superseded 时指向替代者 id）。
+    valid_until_ts(Unix 秒,0=永不过期)。默认召回只含 active/pending 且未过期(superseded/wrong/expired 退出)。
+    """
+    try:
+        return memory_store.set_experience_status(
+            id, status, superseded_by=superseded_by or None,
+            valid_until_ts=valid_until_ts,
+        )
+    except Exception as e:  # noqa: BLE001 — 降级规范
+        return {"ok": False, "id": id, "error": str(e)}
+
+
+@mcp.tool()
+def mark_superseded(old_id: str, new_id: str) -> dict:
+    """把 old 记忆标 superseded（被 new 覆盖,退出召回）。set_experience_status 的便利封装。"""
+    try:
+        return memory_store.mark_superseded(old_id, new_id)
+    except Exception as e:  # noqa: BLE001 — 降级规范
+        return {"ok": False, "id": old_id, "error": str(e)}
+
+
+@mcp.tool()
 def recall_experiences(
     text: str,
     top_k: int = 5,
     region: str | None = None,
+    include_inactive: bool = False,
 ) -> dict:
     """按关键词召回相关经验（只读，不调模型）。用于检视 Experience Memory 会召回什么。
 
-    返回 {count, experiences:[{id,region,summary,details,triggers,created_at,source}]}。
-    生产 consult 注入由 config memory_inject 门控（默认关）。
+    默认 ``include_inactive=False`` 镜像生产 retrieve(只含 active/pending 且未过期);
+    True=含 superseded/wrong/expired 供排查。返回 {count, experiences:[...完整 to_dict...]}。
     """
     try:
         hits = memory_store.search(text, top_k=top_k, region=region)
+        if not include_inactive:
+            hits = [e for e in hits if governance.is_recallable(e)]
         return {"count": len(hits), "experiences": [e.to_dict() for e in hits]}
     except Exception as e:  # noqa: BLE001 — 降级规范
         return {"count": 0, "experiences": [], "error": str(e)}
