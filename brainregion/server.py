@@ -1490,6 +1490,44 @@ def wake_gate(
 
 
 @mcp.tool()
+def inspect(
+    view: str = "all",
+    goal: str = "",
+    problem: str = "",
+    context: str = "",
+    files: dict[str, str] | None = None,
+    gold_regions: list[str] | None = None,
+    run_id: str = "",
+    region: str = "",
+    judge_id: str = "",
+    escalate_confidence: float = 0.5,
+    shadow_wake_threshold: float | None = None,
+    top_k: int = 3,
+    memory_preview_k: int = 3,
+    history_limit: int = 20,
+) -> dict:
+    """只读调试窗口（v5.x）：把系统内部状态做成立即可见的可观测面。
+
+    view ∈ {all, activation, memory, run, calibration}，只含请求的 section（all=全部 4）。
+    - activation：重跑 wake_gate（无模型）看「该醒没醒」（给 gold_regions 才判漏唤醒）。
+    - memory：Experience Memory 按 region 盘点 + 年龄。
+    - run：读历史 eval run 的已存 summary + per-task 5 态阶段时间线；无 run_id → 最近 N run 历史表。
+    - calibration：judge 校准状态 + am-I-blocked。
+
+    纯只读：不调模型、不写、不重算（wake_gate 已验为 read-only sidecar）。
+    """
+    from .inspector import inspect as _inspect_facade  # lazy：避免 inspector↔server 循环 import
+
+    return _inspect_facade(
+        view=view, goal=goal, problem=problem, context=context, files=files or {},
+        gold_regions=gold_regions, run_id=run_id or None, region=region or None,
+        judge_id=judge_id or None, escalate_confidence=escalate_confidence,
+        shadow_wake_threshold=shadow_wake_threshold, top_k=top_k,
+        memory_preview_k=memory_preview_k, history_limit=history_limit,
+    )
+
+
+@mcp.tool()
 def list_knowledge(adapter: str = "auto") -> dict:
     """列出知识库案例索引（id/title/category/triggers）。"""
     root = os.environ.get("UNITY_PROJECT_ROOT", ".")

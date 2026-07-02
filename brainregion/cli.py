@@ -132,6 +132,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_out.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_out.add_argument("--output-file", default=None)
 
+    p_ins = sub.add_parser(
+        "inspect",
+        help="只读调试窗口（v5.x）：activation/memory/run/calibration 可观测面，不调模型不写",
+    )
+    p_ins.add_argument("--view", default="all",
+                       choices=["all", "activation", "memory", "run", "calibration"],
+                       help="视图过滤（默认 all 出全部 4 section）")
+    p_ins.add_argument("--run", default=None, help="run view：run_id（省略 → 最近 N run 历史表）")
+    p_ins.add_argument("--region", default=None, help="memory view：按 region 过滤")
+    p_ins.add_argument("--judge", default=None, help="calibration view：按 judge_id 过滤")
+    p_ins.add_argument("--goal", default=None, help="activation view 输入")
+    p_ins.add_argument("--problem", default=None, help="activation view 输入")
+    p_ins.add_argument("--context", default=None, help="activation view 输入")
+    p_ins.add_argument("--gold-regions", default=None, help="activation view：逗号分隔 gold region（判漏唤醒）")
+    p_ins.add_argument("--memory-preview-k", type=int, default=3)
+    p_ins.add_argument("--top-k", type=int, default=3, help="activation view：wake top_k")
+    p_ins.add_argument("--escalate-confidence", type=float, default=0.5)
+    p_ins.add_argument("--history-limit", type=int, default=20, help="run view 无 --run 时列多少条")
+    p_ins.add_argument("--output-file", default=None, help="写文件（默认 stdout，json）")
+
     return parser
 
 
@@ -255,6 +275,26 @@ def _outcome_markdown(result: dict) -> str:
     return "\n".join(lines)
 
 
+def run_inspect(args) -> None:
+    """inspect 子命令：只读调试窗口，json 输出（结构化 debug 数据，无需 markdown）。"""
+    from brainregion.inspector import inspect as inspect_facade
+
+    gold = [g.strip() for g in (args.gold_regions or "").split(",") if g.strip()] or None
+    result = inspect_facade(
+        view=args.view,
+        goal=args.goal or "", problem=args.problem or "", context=args.context or "",
+        gold_regions=gold, run_id=args.run or None, region=args.region or None,
+        judge_id=args.judge or None, escalate_confidence=args.escalate_confidence,
+        top_k=args.top_k, memory_preview_k=args.memory_preview_k,
+        history_limit=args.history_limit,
+    )
+    text = json.dumps(result, ensure_ascii=False, indent=2)
+    if args.output_file:
+        Path(args.output_file).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+
+
 def main() -> None:
     # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
     # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
@@ -287,6 +327,9 @@ def main() -> None:
         if args.output_format != "json":
             result["rendered"] = _outcome_markdown(result)
         _emit(result, args)
+        return
+    if args.command == "inspect":
+        run_inspect(args)
         return
     common = dict(
         adapter=args.adapter, panel=args.panel, dimensions=args.dimensions,

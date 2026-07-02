@@ -15,7 +15,13 @@ import os
 import sqlite3
 from pathlib import Path
 
+from brainregion import __version__ as _BR_VERSION
+
 logger = logging.getLogger("brainregion.eval.store")
+
+# summary blob 的 schema 版本（Inspector 据此解读，免写 if-has-field 散判）。只增不改；
+# summary 结构发生不兼容变更时 +1。旧 run 无 __provenance__ → Inspector 显示 unknown。
+SUMMARY_SCHEMA_VERSION = 1
 
 
 def _db_path() -> Path:
@@ -107,6 +113,33 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _connect_readonly() -> sqlite3.Connection:
+    """只读连接（Inspector 专用）：复用 _connect 建表（幂等）+ WAL + busy_timeout，再开 query_only。
+
+    query_only=ON 后任何写（INSERT/UPDATE/DELETE/ALTER）抛 sqlite3.OperationalError —— 即便
+    Inspector 代码误调写也拒，defense-in-depth。
+    """
+    conn = _connect()
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+def _loads(s) -> dict:
+    try:
+        v = json.loads(s) if s else {}
+        return v if isinstance(v, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _loads_list(s) -> list:
+    try:
+        v = json.loads(s) if s else []
+        return v if isinstance(v, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def record_calibration(rec, summary: dict) -> None:
     """落 advice judge 校准 artifact（五元组 upsert）。"""
     try:
@@ -157,6 +190,10 @@ def _as_json(obj) -> str:
 def record_run(entry) -> None:
     try:
         conn = _connect()
+        # Provenance stamp：每条落库 run 的 summary 标 __provenance__（版本 + schema）。单点 chokepoint
+        # （review/outcome 两路都过 record_run）。setdefault 不覆盖 caller 预填；本地 copy 不污染入参。
+        summary = dict(entry.summary or {})
+        summary.setdefault("__provenance__", _provenance())
         conn.execute(
             "INSERT INTO eval_runs(run_id,date,git_sha,variants,judge_models,rubric_hash,"
             "knowledge_hash,reviewer_hash,defaults_hash,n_tasks,summary) "
@@ -172,12 +209,16 @@ def record_run(entry) -> None:
                 json.dumps(entry.judge_models, ensure_ascii=False),
                 entry.rubric_hash, entry.knowledge_hash, entry.reviewer_hash,
                 entry.defaults_hash, entry.n_tasks,
-                json.dumps(entry.summary, ensure_ascii=False, default=str),
+                json.dumps(summary, ensure_ascii=False, default=str),
             ),
         )
         conn.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("eval record_run 失败: %s", e)
+
+
+def _provenance() -> dict:
+    return {"brainregion_version": _BR_VERSION, "summary_schema": SUMMARY_SCHEMA_VERSION}
 
 
 def record_case(rec) -> None:
@@ -241,3 +282,95 @@ def export_jsonl(run_id: str, path) -> int:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
     return len(rows)
+
+
+# ───────────────────────── Inspector read 路径（只读 SELECT，参数化，query_only 连接）─────────────────────────
+# 镜像 export_jsonl 的 SELECT，但返回内存 dict（report_summary/scores 等 JSON 字段已解析）。
+# Inspector 只调这些 + lookup_calibration；禁用 record_* / f-string 拼 SQL（run_id/judge_id 来自外部）。
+
+
+def list_runs(limit: int = 20) -> list[dict]:
+    """最近 N run（最新优先，SQL 层 ORDER BY date DESC LIMIT，非 Python 切片）。
+
+    每行：{run_id, date, git_sha, n_tasks, variants(list), judge_models(list), summary(dict)}。
+    summary 一并取（history view 要算 status/cost，单查询免 N+1）。
+    """
+    limit = max(1, min(int(limit), 500))
+    conn = _connect_readonly()
+    rows = conn.execute(
+        "SELECT run_id, date, git_sha, n_tasks, variants, judge_models, summary "
+        "FROM eval_runs ORDER BY date DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["variants"] = _loads_list(d.get("variants"))
+        d["judge_models"] = _loads_list(d.get("judge_models"))
+        d["summary"] = _loads(d.get("summary"))
+        out.append(d)
+    return out
+
+
+def fetch_run(run_id: str) -> dict | None:
+    """单 run 元数据 + summary（已解析）。无 → None。"""
+    conn = _connect_readonly()
+    row = conn.execute("SELECT * FROM eval_runs WHERE run_id=?", (run_id,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["summary"] = _loads(d.get("summary"))
+    d["variants"] = _loads_list(d.get("variants"))
+    d["judge_models"] = _loads_list(d.get("judge_models"))
+    return d
+
+
+def fetch_cases(run_id: str) -> list[dict]:
+    """某 run 全部 case record（report_summary/retrieved_case_ids/cost 已解析）。run_id 参数化。"""
+    conn = _connect_readonly()
+    rows = conn.execute(
+        "SELECT * FROM eval_case_records WHERE run_id=? ORDER BY task_id, variant",
+        (run_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["report_summary"] = _loads(d.get("report_summary"))
+        d["retrieved_case_ids"] = _loads_list(d.get("retrieved_case_ids"))
+        d["cost"] = _loads(d.get("cost"))
+        out.append(d)
+    return out
+
+
+def fetch_judgements(run_id: str) -> list[dict]:
+    """某 run 全部盲评（scores 已解析）。run_id 参数化。"""
+    conn = _connect_readonly()
+    rows = conn.execute(
+        "SELECT * FROM eval_blind_judgements WHERE run_id=? ORDER BY task_id, variant, judge_id",
+        (run_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["scores"] = _loads(d.get("scores"))
+        out.append(d)
+    return out
+
+
+def fetch_calibrations(judge_id: str | None = None) -> list[dict]:
+    """校准 artifact（可按 judge_id 过滤，最新优先）。每行 summary 已解析、passed 转 bool。"""
+    conn = _connect_readonly()
+    if judge_id:
+        rows = conn.execute(
+            "SELECT * FROM eval_calibrations WHERE judge_id=? ORDER BY date DESC",
+            (judge_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM eval_calibrations ORDER BY date DESC").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["summary"] = _loads(d.get("summary"))
+        d["passed"] = bool(d.get("passed"))
+        out.append(d)
+    return out
