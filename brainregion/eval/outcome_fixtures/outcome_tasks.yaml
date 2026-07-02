@@ -28,6 +28,11 @@
     why_stuck: "Not sure if parameterized queries alone close the 越权 and injection risks."
     question: "Where are the real privilege-escalation and injection risks, and what tests prove they're closed?"
   gold_regions: [security]
+  seed_memory:
+    - summary: "SQL 注入 + 越权：参数化查询堵注入，RBAC + 显式 owner 校验堵越权"
+      details: "参数化查询（预编译）消除 SQL 注入；越权（IDOR/权限提升）要靠 RBAC 中间件 + 每个对象写操作前显式校验 owner/tenant。两者不同层面，参数化不覆盖越权。"
+      triggers: ["SQL", "injection", "越权", "parameterized", "authz", "RBAC", "privilege", "注入"]
+      region: "security"
   notes: "security 无同名 consultant→[challenge,critic]。sqli/越权 在 security 的 sentinel_keywords，
     wake_gate 默认 full 配置（sentinel=True）才兜住——outcome eval 用默认配置。"
 
@@ -73,7 +78,12 @@
     why_stuck: "Can't repro in staging; only happens under sustained load."
     question: "Where's the connection leak, and what's the smallest repro?"
   gold_regions: [debugging]
-  notes: "debugging→[debugger]。crash/bug/leak。"
+  seed_memory:
+    - summary: "连接池泄漏：异常路径未释放 + 健康检查缺失"
+      details: "OOM + 连接耗尽根因常是池里连接在异常路径未 close。修：try-with-resources / finally 释放；testOnBorrow 健康检查剔除死连接；按 tenant 限流。压测才能复现。"
+      triggers: ["OOM", "leak", "connection", "pool", "release", "内存", "连接", "泄漏", "stuck", "deploy"]
+      region: "debugging"
+  notes: "debugging→[debugger]。crash/bug/leak。seed_memory 给 routed+memory 正信号（连接泄漏经验命中）。"
 
 - id: oc-007-debugging-deadlock
   task_type: consult
@@ -105,7 +115,12 @@
     problem: "API p99 latency 慢，spiking under load; bottleneck unclear—could be DB, serialization, or the sync client."
     goal: "Identify the hotspot and propose a fix path."
   gold_regions: [performance]
-  notes: "performance→[performance,critic]。latency/bottleneck/性能。"
+  seed_memory:
+    - summary: "p99 尾延迟：分位采样定位，常是 DB 慢查询或同步 client 阻塞"
+      details: "p99 飙升先看 p50 是否正常（只尾延迟=少数慢请求）。常见根因：DB 慢查询缺索引、同步 HTTP client 阻塞、序列化热点。用分位采样 + flame graph 定位，别只看均值。"
+      triggers: ["p99", "latency", "bottleneck", "slow", "延迟", "性能", "spiking", "DB", "serialization"]
+      region: "performance"
+  notes: "performance→[performance,critic]。latency/bottleneck/性能。seed_memory 给 routed+memory 正信号。"
 
 - id: oc-010-perf-throughput
   task_type: consult
@@ -123,7 +138,12 @@
     problem: "Possible auth bypass via header injection on the admin endpoint; need to challenge the 越权 surface before launch."
     question: "Where are the real privilege-escalation risks, and what tests prove they're closed?"
   gold_regions: [security]
-  notes: "security→[challenge,critic]。越权/injection sentinel。"
+  seed_memory:
+    - summary: "Header 注入越权：客户端 header 不可信，身份只从签名 token 取"
+      details: "auth bypass via header injection 根因是信任了客户端 header（X-Forwarded-User / X-Admin）。修：身份只从签名 token / 服务端 session 取，忽略客户端身份 header；admin 端点单独 RBAC + IP 白名单。"
+      triggers: ["auth", "header", "injection", "bypass", "越权", "admin", "身份", "privilege", "escalation"]
+      region: "security"
+  notes: "security→[challenge,critic]。越权/injection sentinel。seed_memory 给 routed+memory 正信号。"
 
 - id: oc-012-security-secret
   task_type: consult
@@ -141,7 +161,12 @@
     problem: "Plan splitting the monolith into two services with minimal downtime; need milestones, rollback, and acceptance gates."
     goal: "A reversible migration plan with testable gates."
   gold_regions: [planning]
-  notes: "planning→[architect,test_designer,critic]。迁移/rollout/migration。"
+  seed_memory:
+    - summary: "单体拆分：strangler-fig 渐进切割 + 双写 + 影子流量"
+      details: "零停机拆单体用 strangler-fig：边界放 facade，新服务逐步接管路由；数据双写 + 影子流量比对一致性；新服务稳定后再切流量、退老路径。别 big-bang 一次性切。"
+      triggers: ["split", "monolith", "service", "migration", "拆分", "单体", "rollout", "downtime", "milestones"]
+      region: "planning"
+  notes: "planning→[architect,test_designer,critic]。迁移/rollout/migration。seed_memory 给 routed+memory 正信号。"
 
 - id: oc-014-planning-bluegreen
   task_type: consult
@@ -159,7 +184,12 @@
     problem: "Unity Burst job sync point in the ECS subsystem causing main-thread stall; Entity dependency chain blocks the schedule."
     goal: "Remove the sync point without breaking the Jobs schedule or performance."
   gold_regions: [unity_ecs, performance]
-  notes: "unity_ecs+performance→[unity_ecs]∪[performance,critic]。Burst/ECS/job/main-thread。"
+  seed_memory:
+    - summary: "ECS 主线程 sync point：合并 EntityCommandBuffer，打宽依赖链"
+      details: "Burst job 主线程卡顿常是 EntityCommandBuffer sync point（多个 ECB 在链上形成串行依赖）。修：合并同帧 ECB 为单个、推迟非关键结构变更到下一帧、用 EntityDependencyManager 打宽依赖图减少串行。"
+      triggers: ["Unity", "ECS", "Burst", "sync", "job", "EntityCommandBuffer", "schedule", "main-thread", "stall", "dependency"]
+      region: "unity_ecs"
+  notes: "unity_ecs+performance→[unity_ecs]∪[performance,critic]。Burst/ECS/job/main-thread。seed_memory 给 routed+memory 正信号。"
 
 - id: oc-016-research-mq
   task_type: consult
@@ -205,3 +235,122 @@
     goal: "A launch plan that's both reversible and security-reviewed."
   gold_regions: [planning, security]
   notes: "planning+security→[architect,test_designer,critic]∪[challenge,critic]。rollout/launch/越权/injection。"
+
+# ===== Phase2A formal 扩到 30（formal_min_n=30，去 pilot 前缀）：5 正信号（带 seed）+ 5 负对照（无 seed） =====
+
+- id: oc-021-debugging-cache-stampede
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Bug: cache stampede on hot key expiry — thundering herd rebuilds overload the DB; intermittent outage right after cache TTL."
+    why_stuck: "Adding TTL randomness didn't fully stop it; still see DB spikes on expiry."
+    question: "What's the robust fix, and how to test it under load?"
+  gold_regions: [debugging]
+  seed_memory:
+    - summary: "缓存击穿：singleflight/mutex 合并重建 + 提前续期"
+      details: "cache stampede 根因是热 key 过期瞬间大量请求并发重建。修：singleflight（同 key 只一个重建，其余等结果）/ mutex；或 jitter + 后台异步提前续期。压测用突增并发 + 强制过期。"
+      triggers: ["cache", "stampede", "thundering", "herd", "TTL", "expiry", "DB", "缓存", "击穿", "overload"]
+      region: "debugging"
+  notes: "debugging→[debugger]。seed_memory 正信号（singleflight 命中）。"
+
+- id: oc-022-perf-serialization
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Performance: JSON serialization is the hotspot in the hot path — CPU profiles show the serializer dominating under load, plus GC pressure from allocations."
+    goal: "Cut serialization CPU + GC; weigh streaming vs schema-based vs zero-copy."
+  gold_regions: [performance]
+  seed_memory:
+    - summary: "序列化热点：schema 代码生成替代反射 + 流式 + 复用 buffer"
+      details: "JSON 序列化吃 CPU 常是反射 + 中间字符串分配。修：换 schema-based 代码生成序列化器（编译期，零反射）、流式写出到 buffer 避免中间 string、复用 buffer 降 GC。量化用 flame graph 对比 before/after。"
+      triggers: ["serialization", "JSON", "CPU", "GC", "hot", "反射", "序列化", "allocation", "性能", "serializer"]
+      region: "performance"
+  notes: "performance→[performance,critic]。seed_memory 正信号。"
+
+- id: oc-023-security-csrf
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Security review before launch: state-changing endpoints lack CSRF protection; need to challenge the auth boundary and injection surface for cross-site request forgery."
+    question: "Where are the real CSRF risks and what tests prove they're closed?"
+  gold_regions: [security]
+  seed_memory:
+    - summary: "CSRF：SameSite + 同源 token + 幂等性检查"
+      details: "CSRF 防护三层：Cookie 设 SameSite=Lax/Strict（挡多数）、对 state-changing 请求校验同源 token（double-submit / 同步器模式）、敏感操作加幂等性/二次确认。GET 必须 idempotent。测试用跨站伪造请求验证被拒。"
+      triggers: ["CSRF", "cross-site", "forgery", "SameSite", "token", "cookie", "越权", "auth", "security", "launch"]
+      region: "security"
+  notes: "security→[challenge,critic]。seed_memory 正信号。"
+
+- id: oc-024-planning-schema-refactor
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Plan a zero-downtime database schema refactor: rename + split a heavily-used column across sharded stores with rollback and acceptance gates."
+    goal: "A reversible migration plan with testable acceptance gates."
+  gold_regions: [planning]
+  seed_memory:
+    - summary: "schema 演进：expand-contract 三阶段，别 big-bang rename"
+      details: "危险 schema 变更（rename/split）用 expand-contract：① 加新列双写（expand）；② 迁移存量 + 双读校验；③ 切读新列；④ 删旧列（contract）。每阶段独立可回滚。别一次性 rename，旧代码会炸。"
+      triggers: ["schema", "refactor", "migration", "rename", "column", "sharded", "rollout", "rollback", "downtime"]
+      region: "planning"
+  notes: "planning→[architect,test_designer,critic]。seed_memory 正信号（expand-contract 命中）。"
+
+- id: oc-025-unity-gc-alloc
+  task_type: consult
+  difficulty: cross_domain
+  input:
+    problem: "Unity Burst job system: GC allocation spikes in the hot path (per-frame allocations) cause hitches; need to remove allocations without breaking the Jobs schedule."
+    goal: "Zero per-frame allocation while keeping the job schedule correct."
+  gold_regions: [unity_ecs, performance]
+  seed_memory:
+    - summary: "ECS 零分配：struct + NativeArray Persistent 池，禁 managed heap"
+      details: "Burst job 每帧分配 GC spike 根因是用了 managed 对象（LINQ/string/闭包）。修：值类型 struct + NativeArray（Persistent，复用）、热路径零 string、禁 managed heap 分配；Profiler GC Alloc 列定位。"
+      triggers: ["Unity", "ECS", "Burst", "GC", "allocation", "job", "NativeArray", "struct", "分配", "性能", "hot"]
+      region: "unity_ecs"
+  notes: "unity_ecs+performance。seed_memory 正信号。"
+
+- id: oc-026-research-llm-eval
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Researching LLM evaluation frameworks before adopting one; need to compare tradeoffs across docs and recent benchmarks, sanity-check the fit."
+    question: "Which eval framework fits our needs, and what evidence should I weigh?"
+    goal: "A sanity check on the eval-framework tradeoff."
+  gold_regions: [research]
+  notes: "research→[]（fallback）。负对照（无 seed）。"
+
+- id: oc-027-review-conventions
+  task_type: consult
+  difficulty: simple
+  input:
+    problem: "Pre-merge review of a large PR touching many files; want a sanity check on the review checklist and what's commonly overlooked."
+    question: "What should the reviewer focus on, and what's commonly missed?"
+  gold_regions: [review]
+  notes: "review→[]（fallback）。负对照（无 seed）。"
+
+- id: oc-028-debugging-heisenbug
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Bug: heisenbug — the failure vanishes when observed (logging/profiler attached); only reproduces in production, never in dev or under tracing."
+    question: "How do you debug a bug that hides under observation?"
+  gold_regions: [debugging]
+  notes: "debugging→[debugger]。负对照（debugging 任务无 seed，测 memory 缺席不伤）。"
+
+- id: oc-029-planning-team-split
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Plan splitting one large team into two ownership areas with minimal disruption: ownership boundaries, migration of on-call, and acceptance criteria."
+    goal: "A reversible org-split plan with clear ownership gates."
+  gold_regions: [planning]
+  notes: "planning→[architect,test_designer,critic]。负对照（无 seed）。"
+
+- id: oc-030-perf-cold-start
+  task_type: consult
+  difficulty: complex
+  input:
+    problem: "Performance: cold-start latency is too high — first request after deploy is slow, suspected to be lazy init + cache warmup."
+    goal: "Cut cold-start time; weigh prewarm vs lazy vs background warmup."
+  gold_regions: [performance]
+  notes: "performance→[performance,critic]。负对照（无 seed）。"
