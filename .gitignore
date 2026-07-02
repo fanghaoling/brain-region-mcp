@@ -25,6 +25,10 @@ Assets/
 # Local one-off verification scripts
 scripts/verify_*
 
+# Local snapshot output (viz CLI default HTML/JSON artifacts)
+brain_region_snapshot.html
+brain_region_snapshot.json
+
 # Local planning / issue / spec notes (not uploaded)
 docs/ai_collaboration_roadmap.zh-CN.md
 docs/roadmap_backups/

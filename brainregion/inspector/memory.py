@@ -2,6 +2,7 @@
 
 按 region 计数 + 总量 + 最近 N 条（带年龄 days）+ 预览;Health: by_status(active/pending/
 superseded/wrong) + expired_count + recallable/non_recallable(一眼看 memory 是否腐烂)。
+by_region_recallable:每 region 可召回数(viz RegionSnapshot.recallable 用;同 is_recallable 循环,零额外 pass)。
 复用 memory_store.list_experiences + governance 谓词。
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from ..memory import governance, store as memory_store
 def inspect_memory(*, region: str | None = None, preview_k: int = 3) -> dict:
     events = memory_store.list_experiences(region=region)  # 新→旧；DB 错 → []
     by_region: dict[str, int] = {}
+    by_region_recallable: dict[str, int] = {}  # 每 region 可召回数(viz RegionSnapshot 用)
     by_status: dict[str, int] = {s: 0 for s in (governance.ACTIVE, governance.PENDING,
                                                 governance.SUPERSEDED, governance.WRONG)}
     expired_count = 0
@@ -27,11 +29,13 @@ def inspect_memory(*, region: str | None = None, preview_k: int = 3) -> dict:
             expired_count += 1
         if governance.is_recallable(e):
             recallable += 1
+            by_region_recallable[r] = by_region_recallable.get(r, 0) + 1
     preview = [_event_summary(e) for e in events[: max(0, int(preview_k))]]
     return {
         "total": len(events),
         "region_filter": region,
         "by_region": by_region,
+        "by_region_recallable": by_region_recallable,
         "health": {
             "by_status": by_status,
             "expired_count": expired_count,

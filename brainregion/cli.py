@@ -152,6 +152,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_ins.add_argument("--history-limit", type=int, default=20, help="run view 无 --run 时列多少条")
     p_ins.add_argument("--output-file", default=None, help="写文件（默认 stdout，json）")
 
+    p_snap = sub.add_parser(
+        "snapshot",
+        help="脑状态可视化（Phase 1）：投影 Inspector → 自包含静态 HTML 面板（region 中心）",
+    )
+    p_snap.add_argument("--goal", default=None, help="激活查询输入（给则出 Activation 段）")
+    p_snap.add_argument("--problem", default=None, help="激活查询输入")
+    p_snap.add_argument("--context", default=None, help="激活查询输入")
+    p_snap.add_argument("--gold-regions", default=None, help="逗号分隔 gold region（判漏唤醒）")
+    p_snap.add_argument("--run", default=None, help="聚焦单个 run（出 timeline 详情）")
+    p_snap.add_argument("--region", default=None, help="memory view 按 region 过滤")
+    p_snap.add_argument("--judge", default=None, help="calibration view 按 judge 过滤")
+    p_snap.add_argument("--history-limit", type=int, default=20)
+    p_snap.add_argument("--memory-preview-k", type=int, default=5)
+    p_snap.add_argument("--top-k", type=int, default=3)
+    p_snap.add_argument("--out", default=None, help="HTML 输出路径（默认 ./brain_region_snapshot.html）")
+    p_snap.add_argument("--save", default=None, help="把 snapshot 落盘 JSON（可后续 --from 复渲染）")
+    p_snap.add_argument("--from", dest="from_file", default=None,
+                        help="从已存 snapshot JSON 加载渲染（不调 Inspector/DB，确定性）")
+    p_snap.add_argument("--json", dest="as_json", action="store_true", help="输出 snapshot dict 到 stdout（不渲染 HTML）")
+    p_snap.add_argument("--open", dest="open_browser", action="store_true", help="写完后用浏览器打开 HTML")
+
     return parser
 
 
@@ -295,6 +316,47 @@ def run_inspect(args) -> None:
         print(text)
 
 
+def run_snapshot(args) -> None:
+    """snapshot 子命令：build（或 --from 加载）→ 渲染 HTML / 落盘 JSON / stdout JSON。
+
+    --from 硬不变量：从已存 snapshot.json 加载渲染，**绝不调 Inspector/DB**（save→render 确定性）。
+    """
+    import webbrowser
+
+    from brainregion.viz import BrainSnapshot, build_snapshot, render_html
+
+    # 1. 取 snapshot：--from 优先（不调 Inspector/DB），否则 build
+    if args.from_file:
+        data = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+        snap = BrainSnapshot.from_dict(data)
+    else:
+        gold = [g.strip() for g in (args.gold_regions or "").split(",") if g.strip()] or None
+        snap = build_snapshot(
+            goal=args.goal or "", problem=args.problem or "", context=args.context or "",
+            gold_regions=gold, run_id=args.run or None, region=args.region or None,
+            judge_id=args.judge or None, history_limit=args.history_limit,
+            memory_preview_k=args.memory_preview_k, top_k=args.top_k,
+        )
+
+    # 2. --save：落盘 JSON（capture；无论是否渲染 HTML）
+    if args.save:
+        Path(args.save).write_text(
+            json.dumps(snap.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    # 3. 输出：--json 走 stdout；否则渲染 HTML 写文件（+ 可选 --open）
+    if args.as_json:
+        print(json.dumps(snap.to_dict(), ensure_ascii=False, indent=2))
+        return
+
+    html_text = render_html(snap)
+    out_path = Path(args.out) if args.out else Path.cwd() / "brain_region_snapshot.html"
+    out_path.write_text(html_text, encoding="utf-8")
+    print(f"snapshot → {out_path}")
+    if args.open_browser:
+        webbrowser.open(out_path.resolve().as_uri())
+
+
 def main() -> None:
     # Windows GBK 控制台无法 print emoji（🔴⚠️ 等，output/markdown 与 eval 都会用到）→ 重配 stdout
     # 为 utf-8 + errors=replace，至少不崩（实际显示取决于终端 codepage）。
@@ -330,6 +392,9 @@ def main() -> None:
         return
     if args.command == "inspect":
         run_inspect(args)
+        return
+    if args.command == "snapshot":
+        run_snapshot(args)
         return
     common = dict(
         adapter=args.adapter, panel=args.panel, dimensions=args.dimensions,

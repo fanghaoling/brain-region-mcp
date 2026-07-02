@@ -1574,6 +1574,39 @@ def inspect(
 
 
 @mcp.tool()
+def snapshot(
+    goal: str = "",
+    problem: str = "",
+    context: str = "",
+    files: dict[str, str] | None = None,
+    gold_regions: list[str] | None = None,
+    run_id: str = "",
+    region: str = "",
+    judge_id: str = "",
+    history_limit: int = 20,
+    memory_preview_k: int = 5,
+    top_k: int = 3,
+    escalate_confidence: float = 0.5,
+    shadow_wake_threshold: float | None = None,
+) -> dict:
+    """脑状态快照（可视化 Phase 1）：投影 Inspector → 可序列化 BrainSnapshot 数据。
+
+    返回 snapshot.to_dict()（结构化数据，含 schema_version；可落盘后用 CLI `--from` 复渲染）。
+    HTML 渲染走 CLI `brain-region snapshot`（自包含静态面板）。恒取 memory/run/calibration；
+    仅当 problem 或 goal 非空才取 activation（无查询的空 wake 无意义）。纯只读：不调生成模型、不写。
+    """
+    from .viz import build_snapshot  # lazy：避免 viz↔server 循环 import
+
+    return build_snapshot(
+        goal=goal, problem=problem, context=context, files=files or {},
+        gold_regions=gold_regions, run_id=run_id or None, region=region or None,
+        judge_id=judge_id or None, history_limit=history_limit,
+        memory_preview_k=memory_preview_k, top_k=top_k,
+        escalate_confidence=escalate_confidence, shadow_wake_threshold=shadow_wake_threshold,
+    ).to_dict()
+
+
+@mcp.tool()
 def list_knowledge(adapter: str = "auto") -> dict:
     """列出知识库案例索引（id/title/category/triggers）。"""
     root = os.environ.get("UNITY_PROJECT_ROOT", ".")
