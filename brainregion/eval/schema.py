@@ -24,6 +24,7 @@ class EvalTask:
     input: dict = field(default_factory=dict)
     # input = {content, document_type, files, panel, dimensions, extra_context}
     gold_regions: list[str] = field(default_factory=list)  # routing eval：本任务【应唤醒】的 region（wake 精度 ground truth）
+    seed_memory: list = field(default_factory=list)  # Phase2A：memory A/B 的冻结经验种子（eval 不读 DB = 防伪记忆）
     notes: str = ""
     frozen: bool = True
 

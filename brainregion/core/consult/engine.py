@@ -14,6 +14,7 @@ from .prompt import render_consult_prompt
 from .report import ConsultReport, ConsultRequest
 from .synthesize import synthesize_report
 from ..consultants.loader import load_consultant, list_consultants
+from ..context import render_context_blocks
 
 
 class ConsultEngine:
@@ -33,9 +34,20 @@ class ConsultEngine:
         max_cost_usd: float | None = None,
         effort: str | None = None,
         consultation_id: str | None = None,
+        context_blocks: list | None = None,
     ) -> ConsultReport:
         consultation_id = consultation_id or f"consult-{uuid.uuid4().hex[:12]}"
         sanitized, guard_meta = prepare_request(request, max_input_chars=max_input_chars)
+        # ContextProvider 召回块（memory 脑区扶正，config memory_inject 门控）：
+        # 渲染一次（跨 panel×consultant 共用），cap 到 max_input_chars//4 防 budget 挤压。
+        context_block_str = ""
+        if context_blocks:
+            rendered = render_context_blocks(list(context_blocks))
+            cap = max(0, max_input_chars // 4)
+            if cap and len(rendered) > cap:
+                rendered = rendered[:cap]
+            context_block_str = rendered
+            guard_meta["context_blocks"] = len(context_blocks)
         available = set(list_consultants(self.consultants_dir))
         unknown = [name for name in consultants if name not in available]
         if unknown:
@@ -45,7 +57,7 @@ class ConsultEngine:
         jobs: list[dict] = []
         for entry in panel:
             for consultant, role in roles.items():
-                system, user = render_consult_prompt(sanitized, role)
+                system, user = render_consult_prompt(sanitized, role, context_block=context_block_str)
                 jobs.append(
                     {
                         "model": entry["model"],

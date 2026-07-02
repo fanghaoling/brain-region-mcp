@@ -55,6 +55,8 @@ from .core.wake import wake_gate as _wake_gate  # noqa: E402
 from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E402
 from .core import ReviewDocument  # noqa: E402
 from .knowledge import YamlKnowledgeProvider  # noqa: E402
+from .core.context import ContextQuery as _ContextQuery  # noqa: E402
+from .memory import MemoryProvider, store as memory_store  # noqa: E402
 from .privacy import build_policy  # noqa: E402
 from .providers import LiteLLMBackend  # noqa: E402
 
@@ -1023,6 +1025,50 @@ def mark_advice(
 
 
 @mcp.tool()
+def record_experience(
+    summary: str,
+    details: str = "",
+    triggers: list[str] | None = None,
+    region: str = "",
+    source: str = "",
+) -> dict:
+    """记录一条经验到 Experience Memory（append-only），供后续按关键词召回注入 consult context。
+
+    Phase2A：memory 脑区扶正的第一个 ContextProvider。summary 必填；triggers 是召回用的
+    关键词（词面命中）；region 可空（全局）。治理（标错/过期/confidence）defer——本工具只 append。
+    返回 {ok, id}，id 可供后续追溯。注入由 config memory_inject 门控（默认关）；召回检视
+    见 recall_experiences。
+    """
+    try:
+        return memory_store.record_experience(
+            summary=summary, details=details, triggers=triggers or [],
+            region=region, source=source,
+        )
+    except ValueError:
+        raise
+    except Exception as e:  # noqa: BLE001 — 降级规范
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+def recall_experiences(
+    text: str,
+    top_k: int = 5,
+    region: str | None = None,
+) -> dict:
+    """按关键词召回相关经验（只读，不调模型）。用于检视 Experience Memory 会召回什么。
+
+    返回 {count, experiences:[{id,region,summary,details,triggers,created_at,source}]}。
+    生产 consult 注入由 config memory_inject 门控（默认关）。
+    """
+    try:
+        hits = memory_store.search(text, top_k=top_k, region=region)
+        return {"count": len(hits), "experiences": [e.to_dict() for e in hits]}
+    except Exception as e:  # noqa: BLE001 — 降级规范
+        return {"count": 0, "experiences": [], "error": str(e)}
+
+
+@mcp.tool()
 async def review_document(
     content: str,
     document_type: str = "markdown",
@@ -1266,6 +1312,16 @@ async def consult_problem(
         cost_limit = dd.get("max_cost_usd")
     input_limit = int(max_input_chars if max_input_chars is not None else dd.get("consult_max_input_chars", 24000))
 
+    # ContextProvider 召回（memory 脑区扶正，Phase2A）：memory_inject 门控，默认关 = 不注入。
+    context_blocks: list = []
+    memory_meta: dict = {}
+    if dd.get("memory_inject"):
+        anchor = "\n".join(x for x in (problem, context) if x)
+        rr = MemoryProvider.from_store().retrieve(
+            _ContextQuery(text=anchor, top_k=int(dd.get("memory_recall_top_k", 5)))
+        )
+        context_blocks = rr.blocks
+        memory_meta = {"provider": rr.provider, **rr.meta}
     engine = _build_consult_engine(dd)
     report = await engine.consult(
         ConsultRequest(
@@ -1286,6 +1342,7 @@ async def consult_problem(
         max_input_chars=input_limit,
         max_cost_usd=cost_limit,
         effort=dd.get("effort"),
+        context_blocks=context_blocks,
     )
     result = report.to_dict()
     result["panel"] = [entry["label"] for entry in panel_used]
@@ -1301,6 +1358,7 @@ async def consult_problem(
         "route_warnings": route_info["warnings"],
         "ambiguous_models": route_info["ambiguous_models"],
     }
+    result["memory"] = memory_meta
     # 只记录 consult 元数据与 advice id，不记录 prompt/问题正文/advice 全文。
     reviews_db.record_consultation(result)
     return result

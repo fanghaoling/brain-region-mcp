@@ -127,6 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_out.add_argument("--export", default=None, help="导出本次 run 为 JSONL 路径")
     p_out.add_argument("--additive", action="store_true",
                        help="加 routed_additive 变体（叠加式映射：base ∪ region 专题）做 3-way A/B")
+    p_out.add_argument("--memory", action="store_true",
+                       help="Phase2A：routed(control) vs routed+memory(treatment) 单变量 A/B（注入 ContextProvider 召回的经验）")
     p_out.add_argument("--output", dest="output_format", default="json", choices=["json", "markdown"])
     p_out.add_argument("--output-file", default=None)
 
