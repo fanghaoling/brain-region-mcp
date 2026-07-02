@@ -56,7 +56,7 @@ from .core.stages import CORE_REVIEWERS_DIR, build_default_pipeline  # noqa: E40
 from .core import ReviewDocument  # noqa: E402
 from .knowledge import YamlKnowledgeProvider  # noqa: E402
 from .core.context import ContextQuery as _ContextQuery  # noqa: E402
-from .memory import MemoryProvider, store as memory_store  # noqa: E402
+from .memory import MemoryProvider, MemoryScope, store as memory_store  # noqa: E402
 from .privacy import build_policy  # noqa: E402
 from .providers import LiteLLMBackend  # noqa: E402
 
@@ -1317,11 +1317,19 @@ async def consult_problem(
     memory_meta: dict = {}
     if dd.get("memory_inject"):
         anchor = "\n".join(x for x in (problem, context) if x)
-        rr = MemoryProvider.from_store().retrieve(
+        # Phase A selective context：把 memory 召回 scope 到 wake 激活的 region（∪ 全局），
+        # 防跨项目 bleed（Unity 任务注入 Blender 记忆 = IRRELEVANT 失败模式）。
+        # 故意用 _route_regions（静态 trigger 路由）而非 full wake_gate（sentinel/shadow/escalate）
+        # —— 这里只需「该任务属于哪些 region」，不需要防御性兜底唤醒。若未来 routing 逻辑迁移，
+        # memory scope 与 consultant routing 应保持语义一致。
+        routing = _route_regions(goal=goal, problem=problem, context=context, files=files or {})
+        woken = {c["id"] for c in routing.get("selected", [])}
+        scope = MemoryScope(frozenset(woken)) if dd.get("memory_scope", "woken") == "woken" else None
+        rr = MemoryProvider.from_store(scope=scope).retrieve(
             _ContextQuery(text=anchor, top_k=int(dd.get("memory_recall_top_k", 5)))
         )
         context_blocks = rr.blocks
-        memory_meta = {"provider": rr.provider, **rr.meta}
+        memory_meta = {"provider": rr.provider, "scope": sorted(woken), **rr.meta}
     engine = _build_consult_engine(dd)
     report = await engine.consult(
         ConsultRequest(

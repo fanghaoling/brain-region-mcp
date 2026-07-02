@@ -26,6 +26,10 @@ logger = logging.getLogger("brainregion.defaults")
 
 _ENV_PREFIX = "BRAIN_REGION_DEFAULT_"
 _LEGACY_ENV_PREFIX = "DESIGN_REVIEW_DEFAULT_"
+
+# memory_scope 合法值（2 mode 用常量集够；第 3 个 mode 出现再升 enum）。
+MEMORY_SCOPE_MODES = {"woken", "none"}
+
 _BUILTINS = {
     "panel": ["claude-opus-4-8", "gpt-5"],
     "dimensions": [],
@@ -51,6 +55,7 @@ _BUILTINS = {
     "consult_max_cost_usd": None,
     "memory_inject": False,
     "memory_recall_top_k": 5,
+    "memory_scope": "woken",  # Phase A：memory 召回按 wake 的 region scope（"none"=unscoped 消融）
     "planner_panel": [],
     "planner_max_input_chars": 24000,
     "planner_max_cost_usd": None,
@@ -138,6 +143,9 @@ def _apply_config_layer(result: dict[str, dict[str, Any]], cfg: dict[str, Any], 
 def _coerce(key: str, val: str):
     if key == "memory_inject":
         return val.strip().lower() in ("1", "true", "yes", "on")
+    if key == "memory_scope":
+        v = val.strip().lower()
+        return v if v in MEMORY_SCOPE_MODES else "woken"
     if key in ("temperature", "timeout", "max_cost_usd", "consult_max_cost_usd", "planner_max_cost_usd"):
         try:
             return float(val)
