@@ -186,26 +186,26 @@ def _build_kpis(memory: dict, regions: list[RegionSnapshot],
 
     # KPI 1: Memory recallable/total
     if total == 0:
-        mem_status, mem_hint = _NEUTRAL, "no memory yet"
+        mem_status, mem_hint = _NEUTRAL, "暂无记忆"
     else:
         ratio = non_recallable / total
         mem_status = _OK if ratio < 0.2 else (_WARN if ratio < 0.5 else _BAD)
-        mem_hint = f"{non_recallable} inactive (superseded/wrong/expired)"
-    mem_kpi = Kpi(label="Memory", value=f"{recallable} / {total} recallable",
+        mem_hint = f"{non_recallable} 条失效（已覆盖/错误/过期）"
+    mem_kpi = Kpi(label="记忆", value=f"{recallable} / {total} 可召回",
                   status=mem_status, hint=mem_hint)
 
     # KPI 2: Regions total + woke
     n_regions = len(regions)
     if activation is not None:
         woke_n = len([r for r in regions if r.woke == "yes"])
-        reg_hint = f"{woke_n} woke"
+        reg_hint = f"{woke_n} 唤醒"
     else:
-        reg_hint = "no activation query"
-    reg_kpi = Kpi(label="Regions", value=f"{n_regions} total", status=_NEUTRAL, hint=reg_hint)
+        reg_hint = "无激活查询"
+    reg_kpi = Kpi(label="脑区", value=f"共 {n_regions} 个", status=_NEUTRAL, hint=reg_hint)
 
     # KPI 3: Last Run gate decision
     decision = _last_run_decision(runs)
-    run_kpi = Kpi(label="Last Run", value=decision or "no runs",
+    run_kpi = Kpi(label="最近 Run", value=decision or "无 Run",
                   status=_decision_status(decision), hint="")
     return [mem_kpi, reg_kpi, run_kpi]
 

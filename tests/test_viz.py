@@ -64,7 +64,7 @@ def test_build_snapshot_no_query_skips_activation(root, monkeypatch):
     assert snap.activation is None
     assert snap.has_query is False
     assert len(snap.kpis) == 3
-    assert {k.label for k in snap.kpis} == {"Memory", "Regions", "Last Run"}
+    assert {k.label for k in snap.kpis} == {"记忆", "脑区", "最近 Run"}
 
 
 def test_build_snapshot_regions_from_by_region(root):
@@ -107,18 +107,18 @@ def test_kpi_memory_and_last_run(root):
     _seed_run("r1", decision="GO")
     snap = build_snapshot()
     kpi_by_label = {k.label: k for k in snap.kpis}
-    assert kpi_by_label["Memory"].value == "3 / 5 recallable"
+    assert kpi_by_label["记忆"].value == "3 / 5 可召回"
     # 2/5 = 0.4 inactive → warn（< 0.5 但 ≥ 0.2）
-    assert kpi_by_label["Memory"].status == "warn"
-    assert kpi_by_label["Last Run"].value == "GO"
-    assert kpi_by_label["Last Run"].status == "ok"
+    assert kpi_by_label["记忆"].status == "warn"
+    assert kpi_by_label["最近 Run"].value == "GO"
+    assert kpi_by_label["最近 Run"].status == "ok"
 
 
 def test_kpi_last_run_no_runs_neutral(root):
     snap = build_snapshot()
     kpi_by_label = {k.label: k for k in snap.kpis}
-    assert kpi_by_label["Last Run"].value == "no runs"
-    assert kpi_by_label["Last Run"].status == "neutral"
+    assert kpi_by_label["最近 Run"].value == "无 Run"
+    assert kpi_by_label["最近 Run"].status == "neutral"
 
 
 # ── 序列化双向 + schema_version ────────────────────────────────────────────────
@@ -181,8 +181,8 @@ def test_from_dict_render_does_not_touch_inspector_or_store(root, monkeypatch):
 def test_html_contains_kpis_regions_headers(root):
     memory_store.record_experience(summary="hello", triggers=["k"], region="unity_ecs")
     html_out = render_html(build_snapshot())
-    assert "BrainRegion Snapshot" in html_out
-    assert "Memory" in html_out and "Regions" in html_out and "Last Run" in html_out
+    assert "脑状态快照" in html_out
+    assert "记忆" in html_out and "脑区" in html_out and "最近 Run" in html_out
     assert "unity_ecs" in html_out
 
 
@@ -210,8 +210,8 @@ def test_html_timeline_when_run_id(root):
         retrieved_case_ids=["c1"], cost={}, latency_ms=0.0, outputs_json='{"x":1}', error="",
     ))
     html_out = render_html(build_snapshot(run_id="r1"))
-    assert "Run Detail" in html_out
-    assert "retrieve" in html_out   # 阶段列头
+    assert "Run 详情" in html_out
+    assert "检索" in html_out   # 阶段列头（中文）
 
 
 # ── Renderer 协议 + 分发 ───────────────────────────────────────────────────────
@@ -256,8 +256,9 @@ def test_cli_snapshot_save_then_from_renders(root, tmp_path):
     memory_store.record_experience(summary="persisted", triggers=["k"], region="unity_ecs")
     save_file = tmp_path / "snap.json"
     out_file = tmp_path / "from.html"
+    throwaway_html = tmp_path / "throwaway.html"  # --save 默认仍写 HTML,导向 tmp 不污染 cwd
 
-    args = build_parser().parse_args(["snapshot", "--save", str(save_file)])
+    args = build_parser().parse_args(["snapshot", "--save", str(save_file), "--out", str(throwaway_html)])
     run_snapshot(args)
     assert save_file.exists()
     data = json.loads(save_file.read_text(encoding="utf-8"))

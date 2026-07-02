@@ -352,7 +352,7 @@ def run_snapshot(args) -> None:
     html_text = render_html(snap)
     out_path = Path(args.out) if args.out else Path.cwd() / "brain_region_snapshot.html"
     out_path.write_text(html_text, encoding="utf-8")
-    print(f"snapshot → {out_path}")
+    print(f"快照 → {out_path}")
     if args.open_browser:
         webbrowser.open(out_path.resolve().as_uri())
 

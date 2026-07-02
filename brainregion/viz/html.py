@@ -4,6 +4,7 @@
 - **XSS 安全**:所有插值经 html.escape()(stdlib)——memory summary / region 名 / explain / reasons
   全是用户或内部内容,等同 core/context.py 的 data-fencing 思路。
 - region-centric:hero 是 region snapshots 网格;默认(无查询)无 Activation 段。
+- **界面文案统一中文**(方便调试);数据值(gate 决策 GO/NO_GO、run_id、status 枚举)保留原样。
 """
 from __future__ import annotations
 
@@ -15,10 +16,30 @@ from .snapshot import BrainSnapshot
 
 _DOCTYPE = "<!DOCTYPE html>"
 
+# ── 中文标签映射(数据枚举原样存,显示时本地化;CSS class 仍用原始枚举值)──────────
+_GOV_STATUS_LABELS = {"active": "活跃", "pending": "待核实",
+                      "superseded": "已覆盖", "wrong": "错误"}
+_STAGE_LABELS = {"wake": "唤醒", "retrieve": "检索", "memory": "记忆",
+                 "consult": "会诊", "judge": "评审"}
+_STAGE_STATUS_LABELS = {"SUCCESS": "成功", "FAILED": "失败", "SKIPPED": "跳过",
+                        "UNKNOWN": "未知", "NOT_INSTRUMENTED": "未埋点"}
+
 
 def _esc(v) -> str:
     """HTML 转义任意值(防 XSS)。None → 空串。"""
     return html.escape("" if v is None else str(v), quote=True)
+
+
+def _gov_label(status: str) -> str:
+    return _GOV_STATUS_LABELS.get(status or "", status or "")
+
+
+def _stage_label(name: str) -> str:
+    return _STAGE_LABELS.get(name or "", name or "")
+
+
+def _stage_status_label(name: str) -> str:
+    return _STAGE_STATUS_LABELS.get(name or "", name or "")
 
 
 def _fmt_ts(iso: str) -> str:
@@ -96,7 +117,7 @@ class HtmlRenderer:
             _DOCTYPE,
             "<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">",
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-            f"<title>{_esc('BrainRegion Snapshot')}</title>",
+            f"<title>{_esc('BrainRegion 快照')}</title>",
             f"<style>{_CSS}</style></head><body><div class=\"wrap\">",
             self._header(snapshot),
             self._kpis(snapshot.kpis),
@@ -113,8 +134,8 @@ class HtmlRenderer:
     # ── 段 ────────────────────────────────────────────────────────────────────
     def _header(self, s: BrainSnapshot) -> str:
         return (
-            "<header><h1>🧠 BrainRegion Snapshot</h1>"
-            f"<div class=\"meta\">generated {_esc(_fmt_ts(s.generated_at))}"
+            "<header><h1>🧠 BrainRegion 脑状态快照</h1>"
+            f"<div class=\"meta\">生成于 {_esc(_fmt_ts(s.generated_at))}"
             f" · brainregion {_esc(s.brainregion_version)}"
             f" · snapshot schema {_esc(s.schema_version)}</div></header>"
         )
@@ -131,24 +152,22 @@ class HtmlRenderer:
 
     def _regions(self, regions, has_query: bool) -> str:
         if not regions:
-            return "<section><h2>Regions</h2><div class=\"empty\">no regions yet</div></section>"
+            return "<section><h2>脑区</h2><div class=\"empty\">暂无脑区</div></section>"
         cards = []
         for r in regions:
             inactive = max(0, r.total - r.recallable)
             if r.woke == "yes":
-                badge = "<span class=\"badge woke\">WOKE</span>"
+                badge = "<span class=\"badge woke\">已唤醒</span>"
             elif has_query:
                 badge = "<span class=\"badge quiet\">—</span>"
             else:
                 badge = ""
-            cards.append(
-                f"<div class=\"region\"><div class=\"name\">{_esc(r.region)}{badge}</div>"
-                f"<div class=\"nums\"><b>{_esc(r.total)}</b> memories · "
-                f"<b>{_esc(r.recallable)}</b> recallable"
-                + (f" · <span class=\"muted\">{_esc(inactive)} inactive</span>" if inactive else "")
-                + "</div></div>"
-            )
-        return f"<section><h2>Regions</h2><div class=\"regions\">{''.join(cards)}</div></section>"
+            nums = f"<b>{_esc(r.total)}</b> 条 · <b>{_esc(r.recallable)}</b> 可召回"
+            if inactive:
+                nums += f" · <span class=\"muted\">{_esc(inactive)} 失效</span>"
+            cards.append(f"<div class=\"region\"><div class=\"name\">{_esc(r.region)}{badge}</div>"
+                         f"<div class=\"nums\">{nums}</div></div>")
+        return f"<section><h2>脑区</h2><div class=\"regions\">{''.join(cards)}</div></section>"
 
     def _memory(self, memory: dict) -> str:
         if not memory:
@@ -156,28 +175,29 @@ class HtmlRenderer:
         health = memory.get("health") or {}
         by_status = health.get("by_status") or {}
         status_chips = "".join(
-            f"<span class=\"chip {_esc(s)}\">{_esc(s)} {_esc(n)}</span>"
+            f"<span class=\"chip {_esc(s)}\">{_esc(_gov_label(s))} {_esc(n)}</span>"
             for s, n in sorted(by_status.items()) if n
         )
         recallable = health.get("recallable", 0)
         non_recallable = health.get("non_recallable", 0)
         expired = health.get("expired_count", 0)
         parts = [
-            "<section><h2>Memory Health</h2>",
-            f"<div class=\"explain\">{_esc(recallable)} recallable · {_esc(non_recallable)} inactive"
-            f" · {_esc(expired)} expired · {_esc(memory.get('total', 0))} total</div>",
+            "<section><h2>记忆健康</h2>",
+            f"<div class=\"explain\">{_esc(recallable)} 可召回 · {_esc(non_recallable)} 失效"
+            f" · {_esc(expired)} 过期 · 共 {_esc(memory.get('total', 0))}</div>",
             f"<div style=\"margin:10px 0\">{status_chips}</div>" if status_chips else "",
         ]
         preview = memory.get("preview") or []
         if preview:
             parts.append("<table><tbody>")
             for e in preview:
+                st = e.get("status", "active")
                 parts.append(
                     "<tr>"
                     f"<td class=\"mono\">{_esc(e.get('region') or '(global)')}</td>"
                     f"<td>{_esc(e.get('summary'))}</td>"
-                    f"<td><span class=\"chip {_esc(e.get('status', 'active'))}\">{_esc(e.get('status', 'active'))}</span></td>"
-                    f"<td class=\"muted\">{_esc(e.get('age_days'))}d</td>"
+                    f"<td><span class=\"chip {_esc(st)}\">{_esc(_gov_label(st))}</span></td>"
+                    f"<td class=\"muted\">{_esc(e.get('age_days'))} 天</td>"
                     "</tr>"
                 )
             parts.append("</tbody></table>")
@@ -186,7 +206,7 @@ class HtmlRenderer:
 
     def _runs(self, runs: dict) -> str:
         if not runs:
-            return "<section><h2>Recent Run</h2><div class=\"empty\">no runs</div></section>"
+            return "<section><h2>最近 Run</h2><div class=\"empty\">无 Run</div></section>"
         if "gate" in runs or "timeline" in runs:  # run_id 单 run 详情
             return self._run_detail(runs)
         return self._run_history(runs)
@@ -194,7 +214,7 @@ class HtmlRenderer:
     def _run_history(self, runs: dict) -> str:
         history = runs.get("history") or []
         if not history:
-            return "<section><h2>Recent Run</h2><div class=\"empty\">no runs</div></section>"
+            return "<section><h2>最近 Run</h2><div class=\"empty\">无 Run</div></section>"
         rows = []
         for r in history:
             rows.append(
@@ -206,8 +226,8 @@ class HtmlRenderer:
                 f"<td>{_esc(r.get('n_tasks'))}</td>"
                 "</tr>"
             )
-        return ("<section><h2>Recent Run</h2><table><thead><tr>"
-                "<th>run</th><th>date</th><th>gate</th><th>cost</th><th>tasks</th></tr></thead>"
+        return ("<section><h2>最近 Run</h2><table><thead><tr>"
+                "<th>Run</th><th>时间</th><th>闸门</th><th>成本</th><th>任务</th></tr></thead>"
                 f"<tbody>{''.join(rows)}</tbody></table></section>")
 
     def _run_detail(self, runs: dict) -> str:
@@ -215,20 +235,21 @@ class HtmlRenderer:
         gate = runs.get("gate") or {}
         decision = gate.get("decision")
         parts = [
-            "<section><h2>Run Detail</h2>",
+            "<section><h2>Run 详情</h2>",
             f"<div class=\"explain\"><b>{_esc(run.get('run_id'))}</b>"
-            f" · {_esc(run.get('n_tasks'))} tasks · {_esc(_fmt_ts(run.get('date')))}</div>",
-            f"<div style=\"margin:8px 0\">gate: <span class=\"dec {_dec_class(decision)}\">{_esc(decision or '—')}</span></div>",
+            f" · {_esc(run.get('n_tasks'))} 个任务 · {_esc(_fmt_ts(run.get('date')))}</div>",
+            f"<div style=\"margin:8px 0\">闸门：<span class=\"dec {_dec_class(decision)}\">{_esc(decision or '—')}</span></div>",
         ]
         timeline = runs.get("timeline") or []
         if timeline:
             stage_names = list((timeline[0].get("stages") or {}).keys())
-            head = "".join(f"<th class=\"sym\">{_esc(s)}</th>" for s in stage_names)
+            head = "".join(f"<th class=\"sym\">{_esc(_stage_label(s))}</th>" for s in stage_names)
             body = []
             for row in timeline:
                 syms = row.get("symbols") or {}
+                stages = row.get("stages") or {}
                 cells = "".join(
-                    f"<td class=\"sym\" title=\"{_esc(row.get('stages', {}).get(s, ''))}\">"
+                    f"<td class=\"sym\" title=\"{_esc(_stage_status_label(stages.get(s, '')))}\">"
                     f"{_esc(syms.get(s, '?'))}</td>"
                     for s in stage_names
                 )
@@ -237,12 +258,14 @@ class HtmlRenderer:
                     f"<td class=\"mono\">{_esc(row.get('variant'))}</td>{cells}</tr>"
                 )
             parts.append(
-                "<table class=\"timeline\"><thead><tr><th>task</th><th>variant</th>"
+                "<table class=\"timeline\"><thead><tr><th>任务</th><th>变体</th>"
                 f"{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
             )
             # 图例
-            legend = " ".join(f"{_esc(status_symbol(s))}={_esc(s)}" for s in
-                              ("SUCCESS", "FAILED", "SKIPPED", "UNKNOWN", "NOT_INSTRUMENTED"))
+            legend = " ".join(
+                f"{_esc(status_symbol(s))}={_esc(_stage_status_label(s))}"
+                for s in ("SUCCESS", "FAILED", "SKIPPED", "UNKNOWN", "NOT_INSTRUMENTED")
+            )
             parts.append(f"<div class=\"muted\" style=\"margin-top:6px;font-size:12px\">{legend}</div>")
         parts.append("</section>")
         return "".join(parts)
@@ -251,15 +274,15 @@ class HtmlRenderer:
         if not cal:
             return ""
         blocked = cal.get("am_i_blocked")
-        badge = ("<span class=\"badge\" style=\"background:#ffebe9;color:#cf222e\">BLOCKED</span>"
-                 if blocked else "<span class=\"badge woke\">OK</span>")
+        badge = ("<span class=\"badge\" style=\"background:#ffebe9;color:#cf222e\">阻塞</span>"
+                 if blocked else "<span class=\"badge woke\">通过</span>")
         parts = [
-            f"<section><h2>Calibration {badge}</h2>",
-            f"<div class=\"explain\">{_esc(cal.get('passed_count', 0))}/{_esc(cal.get('n', 0))} judges calibrated</div>",
+            f"<section><h2>校准 {badge}</h2>",
+            f"<div class=\"explain\">{_esc(cal.get('passed_count', 0))}/{_esc(cal.get('n', 0))} 个 judge 已校准</div>",
         ]
         not_passed = cal.get("not_passed") or []
         if not_passed:
-            parts.append("<table><thead><tr><th>judge</th><th>model</th><th>wilson_lower</th><th>threshold</th></tr></thead><tbody>")
+            parts.append("<table><thead><tr><th>judge</th><th>模型</th><th>Wilson 下界</th><th>阈值</th></tr></thead><tbody>")
             for r in not_passed:
                 parts.append(
                     "<tr>"
@@ -276,19 +299,21 @@ class HtmlRenderer:
     def _activation(self, act: dict) -> str:
         metrics = act.get("wake_metrics") or {}
         woken = act.get("woken") or []
-        parts = [
-            "<section><h2>Activation</h2>",
-            f"<div class=\"explain\">{_esc(act.get('explain'))}</div>",
-            "<table><thead><tr><th>metric</th><th>value</th></tr></thead><tbody>",
-            f"<tr><td>woken</td><td>{_esc(', '.join(woken)) or '—'}</td></tr>",
-            f"<tr><td>hit</td><td>{_esc(', '.join(metrics.get('hit') or [])) or '—'}</td></tr>",
-            f"<tr><td>missed</td><td><span class=\"dec {_dec_class('FAIL' if metrics.get('missed') else 'OK')}\">"
-            f"{_esc(', '.join(metrics.get('missed') or [])) or '—'}</span></td></tr>",
-            f"<tr><td>false_wake</td><td>{_esc(', '.join(metrics.get('false_wake') or [])) or '—'}</td></tr>",
-            f"<tr><td>metrics_status</td><td>{_esc(metrics.get('metrics_status'))}</td></tr>",
-            "</tbody></table></section>",
+        rows = [
+            ("唤醒", ", ".join(woken)),
+            ("命中", ", ".join(metrics.get("hit") or [])),
+            ("漏唤醒", ", ".join(metrics.get("missed") or [])),
+            ("误唤醒", ", ".join(metrics.get("false_wake") or [])),
+            ("评分状态", metrics.get("metrics_status")),
         ]
-        return "".join(parts)
+        body = "".join(
+            f"<tr><td>{_esc(label)}</td><td>{_esc(val) or '—'}</td></tr>" for label, val in rows
+        )
+        return (
+            "<section><h2>激活</h2>"
+            f"<div class=\"explain\">{_esc(act.get('explain'))}</div>"
+            f"<table><thead><tr><th>指标</th><th>值</th></tr></thead><tbody>{body}</tbody></table></section>"
+        )
 
 
 def _dec_class(dec) -> str:
